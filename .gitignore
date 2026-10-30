@@ -7,6 +7,11 @@ target/
 ### Case study source (company document, keep out of the public repo) ###
 *.pdf
 
+### Private interview prep and build notes ###
+ARCHITECTURE_PLAN.md
+PROJECT_PROMPT.md
+questions.md
+
 ### OS ###
 .DS_Store
 
