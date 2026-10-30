@@ -50,6 +50,7 @@ public class ReconciliationService {
 
     private static final Logger log = LoggerFactory.getLogger(ReconciliationService.class);
     private static final int PAGE_SIZE = 1000;
+    private static final Duration MAX_CLOCK_SKEW = Duration.ofMinutes(5);
 
     public record RunView(long id, String status, Instant snapshotAt, String fileSha256, int rowsTotal,
                           int rowsRejected, Integer activeCount, Integer missingCount, Double missingRatio,
@@ -93,6 +94,11 @@ public class ReconciliationService {
 
     /** Same as {@link #start(String, InputStream, Instant)} with an explicit brake threshold. */
     public RunView start(String tenantId, InputStream file, Instant snapshotAt, double threshold) {
+        // An export can't be taken in the future. A future snapshotAt would make every employee look "missing"
+        // (their last change is before it), so refuse it up front. 5 minutes allows for clock skew between systems.
+        if (snapshotAt.isAfter(Instant.now().plus(MAX_CLOCK_SKEW))) {
+            throw new ResponseStatusException(HttpStatus.BAD_REQUEST, "INVALID_SNAPSHOT_TIME");
+        }
         SafetyBrake brake = new SafetyBrake(threshold);
         long runId = createRun(tenantId, snapshotAt, threshold);
         try {
