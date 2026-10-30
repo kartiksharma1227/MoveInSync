@@ -7,6 +7,14 @@ spring:
     password: ${DB_PASSWORD:roster}
     hikari:
       maximum-pool-size: 20
+      data-source-properties:
+        # The driver turns a JDBC batch into multi-row INSERTs: several times faster for nightly staging.
+        reWriteBatchedInserts: true
+  servlet:
+    multipart:
+      # A 200k-row file is ~25 MB. Uploads are spooled to a temp file on disk, not held in memory.
+      max-file-size: 100MB
+      max-request-size: 100MB
   jpa:
     # Never keep a DB connection open while the HTTP response is being written.
     open-in-view: false
@@ -34,6 +42,10 @@ roster:
   brake:
     # Share of active employees that may be missing from a nightly file before the run is held.
     threshold: 0.30
+  recon:
+    # A run with no progress for this long is treated as crashed: marked FAILED so the tenant can upload again.
+    stuck-after-minutes: 60
+    stuck-check-interval-ms: 300000
   ingest:
     max-batch-size: 1000
   outbox:
