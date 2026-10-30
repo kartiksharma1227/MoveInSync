@@ -92,6 +92,7 @@ class IngestApiTest extends IntegrationTest {
 
         send(hrSystem, feed).andExpect(jsonPath("$.applied").value(200));
         List<Map<String, Object>> before = snapshot(prefix);
+        int eventsBefore = outboxEvents(prefix);
 
         send(hrSystem, feed)
                 .andExpect(jsonPath("$.applied").value(0))
@@ -102,6 +103,8 @@ class IngestApiTest extends IntegrationTest {
 
         assertThat(before).hasSize(100);
         assertThat(after).isEqualTo(before); // same versions, hashes and even updated_at: no row was written
+        assertThat(eventsBefore).isEqualTo(200);
+        assertThat(outboxEvents(prefix)).isEqualTo(eventsBefore); // and no change event was published again
     }
 
     // ---- H2: ordering, through the real API ----
@@ -180,6 +183,18 @@ class IngestApiTest extends IntegrationTest {
         send(transportAdmin, List.of()).andExpect(status().isForbidden());
     }
 
+    @Test
+    void employeeCannotEditTransportFieldsEvenTheirOwn() throws Exception {
+        String me = uniqueId("ME");
+        createEmployee(me);
+
+        mockMvc.perform(put("/api/v1/employees/{id}/transport", me)
+                        .header("Authorization", token(me, "ACME", "EMPLOYEE"))
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"pickupPoint\":\"My own gate\"}"))
+                .andExpect(status().isForbidden());
+    }
+
     // ---- H9: tenant isolation ----
 
     @Test
@@ -239,6 +254,36 @@ class IngestApiTest extends IntegrationTest {
     }
 
     @Test
+    void transportFieldsSentInsideAnHrEventAreIgnored() throws Exception {
+        String id = uniqueId("IG");
+        createEmployee(id);
+        mockMvc.perform(put("/api/v1/employees/{id}/transport", id)
+                        .header("Authorization", transportAdmin)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content("{\"pickupPoint\":\"Gate 9\",\"specialAssistance\":\"Front seat\"}"))
+                .andExpect(status().isOk());
+
+        // HR tries to set transport-owned fields, both at the top level and inside "hr".
+        String hrEvent = """
+                [{"eventId":"ev-ig","type":"UPDATE","employeeId":"%s","version":2,"occurredAt":"2026-10-01T10:00:00Z",
+                  "pickupPoint":"HR WAS HERE","specialAssistance":"HR WAS HERE",
+                  "hr":{"name":"Test Person","email":"test.person@acme.test","phone":"+919811112222",
+                        "officeCode":"BLR-01","shift":"S1400",
+                        "pickupPoint":"HR WAS HERE","specialAssistance":"HR WAS HERE"}}]
+                """.formatted(id);
+        mockMvc.perform(post("/api/v1/events")
+                        .header("Authorization", hrSystem)
+                        .contentType(MediaType.APPLICATION_JSON)
+                        .content(hrEvent))
+                .andExpect(jsonPath("$.applied").value(1)); // the HR part (shift change) is applied…
+
+        read(transportAdmin, id)                             // …the transport part is not
+                .andExpect(jsonPath("$.shift").value("S1400"))
+                .andExpect(jsonPath("$.pickupPoint").value("Gate 9"))
+                .andExpect(jsonPath("$.specialAssistance").value("Front seat"));
+    }
+
+    @Test
     void overlongTransportFieldIsABadRequest() throws Exception {
         String id = uniqueId("TL");
         createEmployee(id);
@@ -253,6 +298,11 @@ class IngestApiTest extends IntegrationTest {
     private int countEmployees(String... ids) {
         return jdbc.queryForObject("SELECT count(*) FROM employee WHERE tenant_id = 'ACME' AND employee_id = ANY(?)",
                 Integer.class, (Object) ids);
+    }
+
+    private int outboxEvents(String prefix) {
+        return jdbc.queryForObject("SELECT count(*) FROM outbox_event WHERE aggregate_id LIKE ?", Integer.class,
+                prefix + "-%");
     }
 
     private List<Map<String, Object>> snapshot(String prefix) {

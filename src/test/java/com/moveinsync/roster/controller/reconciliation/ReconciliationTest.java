@@ -267,6 +267,22 @@ class ReconciliationTest extends IntegrationTest {
     }
 
     @Test
+    void snapshotTakenInTheFutureIsRefusedAndNoRunIsCreated() throws Exception {
+        Path file = writeCsv(dir.resolve("night.csv"), CsvOptions.rows(10));
+
+        mockMvc.perform(multipart("/api/v1/reconciliations")
+                        .file(csvPart(file))
+                        .param("snapshotAt", Instant.now().plus(Duration.ofHours(1)).toString())
+                        .header("Authorization", hr))
+                .andExpect(status().isBadRequest())
+                .andExpect(jsonPath("$.code").value("INVALID_SNAPSHOT_TIME"));
+
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM reconciliation_run WHERE tenant_id = ?", Integer.class,
+                tenant)).isZero();
+        assertThat(activeCount()).isEqualTo(10);
+    }
+
+    @Test
     void wrongHeaderIsABadRequest() throws Exception {
         Path file = dir.resolve("bad.csv");
         Files.writeString(file, "id,name\n1,someone\n");
