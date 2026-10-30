@@ -7,6 +7,10 @@ spring:
     password: ${DB_PASSWORD:roster}
     hikari:
       maximum-pool-size: 20
+      # Give up after 10 s if every pooled connection is busy, instead of queueing forever.
+      connection-timeout: 10000
+      # Run once per connection, so every query is bounded: row-lock waits and statements can't hang forever.
+      connection-init-sql: "SET lock_timeout = '${roster.db.lock-timeout}'; SET statement_timeout = '${roster.db.statement-timeout}'"
       data-source-properties:
         # The driver turns a JDBC batch into multi-row INSERTs: several times faster for nightly staging.
         reWriteBatchedInserts: true
@@ -40,6 +44,10 @@ management:
         include: health,info,metrics,prometheus
 
 roster:
+  db:
+    # Waiting longer than this for another transaction's row lock fails that record with LOCK_TIMEOUT (retryable).
+    lock-timeout: 5s
+    statement-timeout: 60s
   brake:
     # Share of active employees that may be missing from a nightly file before the run is held.
     threshold: 0.30
