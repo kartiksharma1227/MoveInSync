@@ -1,0 +1,13 @@
+[
+  {"eventId": "evt-1", "type": "CREATE", "employeeId": "E2001", "version": 1, "occurredAt": "2026-10-30T09:00:00Z",
+   "hr": {"name": "Employee 2001", "email": "e2001@acme.test", "phone": "+919800002001", "managerId": "E1005", "officeCode": "BLR-01", "shift": "S0900"}},
+  {"eventId": "evt-2", "type": "CREATE", "employeeId": "E2002", "version": 1, "occurredAt": "2026-10-30T09:00:00Z",
+   "hr": {"name": "Employee 2002", "email": "e2002@acme.test", "phone": "98-765", "managerId": "E1005", "officeCode": "BLR-01", "shift": "S0900"}},
+  {"eventId": "evt-3", "type": "CREATE", "employeeId": "E2003", "version": 1, "occurredAt": "2026-10-30T09:00:00Z",
+   "hr": {"name": "Employee 2003", "email": "e2003@acme.test", "phone": "+919800002003", "managerId": "E1005", "officeCode": "XXX-99", "shift": "S0900"}},
+  {"eventId": "evt-4", "type": "UPDATE", "employeeId": "E2001", "version": 3, "occurredAt": "2026-10-30T09:30:00Z",
+   "hr": {"name": "Employee 2001", "email": "e2001@acme.test", "phone": "+919800002001", "managerId": "E1005", "officeCode": "HYD-01", "shift": "S2200"}},
+  {"eventId": "evt-5", "type": "UPDATE", "employeeId": "E2001", "version": 2, "occurredAt": "2026-10-30T09:15:00Z",
+   "hr": {"name": "Employee 2001", "email": "e2001@acme.test", "phone": "+919800002001", "managerId": "E1005", "officeCode": "BLR-01", "shift": "S1400"}},
+  {"eventId": "evt-6", "type": "DEACTIVATE", "employeeId": "E9999", "version": 1, "occurredAt": "2026-10-30T09:00:00Z"}
+]
