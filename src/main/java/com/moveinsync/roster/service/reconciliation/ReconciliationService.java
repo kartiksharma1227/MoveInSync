@@ -19,6 +19,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
 import com.moveinsync.roster.config.CurrentUser;
+import com.moveinsync.roster.config.RosterMetrics;
 import com.moveinsync.roster.core.ApplyOutcome;
 import com.moveinsync.roster.core.RosterEvent;
 import com.moveinsync.roster.core.SafetyBrake;
@@ -61,12 +62,13 @@ public class ReconciliationService {
     private final OutboxWriter outboxWriter;
     private final TransactionTemplate tx;
     private final ObjectMapper json;
+    private final RosterMetrics metrics;
     private final double brakeThreshold;
     private final long stuckAfterMinutes;
 
     public ReconciliationService(ReconciliationRunRepository runs, SnapshotRepository snapshots, SnapshotStager stager,
                                  IngestService ingestService, EmployeeRepository employees, OutboxWriter outboxWriter,
-                                 TransactionTemplate tx, ObjectMapper json,
+                                 TransactionTemplate tx, ObjectMapper json, RosterMetrics metrics,
                                  @Value("${roster.brake.threshold}") double brakeThreshold,
                                  @Value("${roster.recon.stuck-after-minutes}") long stuckAfterMinutes) {
         this.runs = runs;
@@ -77,6 +79,7 @@ public class ReconciliationService {
         this.outboxWriter = outboxWriter;
         this.tx = tx;
         this.json = json;
+        this.metrics = metrics;
         this.brakeThreshold = brakeThreshold;
         this.stuckAfterMinutes = stuckAfterMinutes;
     }
@@ -104,14 +107,19 @@ public class ReconciliationService {
             long t2 = System.nanoTime();
             log.info("Reconciliation staged runId={} tenant={} rows={} rejected={} stageMs={} brakeMs={}",
                     runId, tenantId, staged.rowsTotal(), staged.rowsRejected(), ms(t1 - t0), ms(t2 - t1));
+            metrics.reconRowsRejected(tenantId, staged.rowsRejected());
 
             if (decision.held()) {
                 // The alert an operator acts on. Counts and IDs only.
                 log.error("SAFETY BRAKE: reconciliation held runId={} tenant={} active={} missing={} missingRatio={} threshold={}",
                         runId, tenantId, active, missing, String.format("%.3f", decision.missingRatio()), threshold);
+                metrics.brakeTripped(tenantId);
+                metrics.reconRun(tenantId, "held");
                 return view(run);
             }
-            return view(applyAndComplete(run));
+            RunView completed = view(applyAndComplete(run));
+            metrics.reconDuration(Duration.ofNanos(System.nanoTime() - t0));
+            return completed;
         } catch (InvalidFileException e) {
             markFailed(runId);
             throw new ResponseStatusException(HttpStatus.BAD_REQUEST, e.getMessage());
@@ -134,6 +142,7 @@ public class ReconciliationService {
     public RunView reject(CurrentUser operator, long runId) {
         ReconciliationRun run = decide(operator, runId, false);
         snapshots.deleteRun(runId);
+        metrics.reconRun(run.getTenantId(), "rejected");
         log.info("Reconciliation rejected runId={} tenant={} by={}", runId, run.getTenantId(), operator.userId());
         return view(run);
     }
@@ -187,6 +196,7 @@ public class ReconciliationService {
         int c = created, u = updated, d = deactivated;
         ReconciliationRun done = update(runId, r -> r.complete(c, u, d));
         snapshots.deleteRun(runId);
+        metrics.reconRun(tenantId, "completed");
         log.info("Reconciliation completed runId={} tenant={} created={} updated={} deactivated={} applyMs={}",
                 runId, tenantId, c, u, d, ms(System.nanoTime() - start));
         return done;
@@ -216,11 +226,13 @@ public class ReconciliationService {
             });
             if (Boolean.TRUE.equals(failed)) {
                 snapshots.deleteRun(candidate.getId());
+                metrics.reconRun(candidate.getTenantId(), "failed");
                 recovered++;
                 log.error("Reconciliation run stuck with no progress for {} min, marked FAILED runId={} tenant={}",
                         stuckAfterMinutes, candidate.getId(), candidate.getTenantId());
             }
         }
+        metrics.stuckRunsRecovered(recovered);
         return recovered;
     }
 
@@ -281,8 +293,9 @@ public class ReconciliationService {
     }
 
     private void markFailed(long runId) {
-        update(runId, ReconciliationRun::fail);
+        ReconciliationRun run = update(runId, ReconciliationRun::fail);
         snapshots.deleteRun(runId);
+        metrics.reconRun(run.getTenantId(), "failed");
     }
 
     private RunView view(ReconciliationRun r) {

@@ -13,6 +13,7 @@ import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.moveinsync.roster.config.RosterMetrics;
 import com.moveinsync.roster.core.ApplyOutcome;
 import com.moveinsync.roster.core.RecordValidator;
 import com.moveinsync.roster.core.RecordValidator.FieldError;
@@ -58,16 +59,28 @@ public class IngestService {
     private final OfficeRepository offices;
     private final OutboxWriter outboxWriter;
     private final TransactionTemplate tx;
+    private final RosterMetrics metrics;
 
     public IngestService(EmployeeRepository employees, OfficeRepository offices, OutboxWriter outboxWriter,
-                         TransactionTemplate tx) {
+                         TransactionTemplate tx, RosterMetrics metrics) {
         this.employees = employees;
         this.offices = offices;
         this.outboxWriter = outboxWriter;
         this.tx = tx;
+        this.metrics = metrics;
     }
 
     public BatchResult ingest(String tenantId, List<EventRequest> requests) {
+        BatchResult result = metrics.timeIngestBatch(() -> ingestBatch(tenantId, requests));
+        metrics.events(tenantId, "applied", result.applied());
+        metrics.events(tenantId, "duplicate", result.duplicate());
+        metrics.events(tenantId, "stale", result.stale());
+        metrics.events(tenantId, "version_conflict", result.versionConflict());
+        metrics.events(tenantId, "rejected", result.rejected());
+        return result;
+    }
+
+    private BatchResult ingestBatch(String tenantId, List<EventRequest> requests) {
         RecordValidator validator = new RecordValidator(offices.findCodes(tenantId)::contains);
         Map<ApplyOutcome, Integer> counts = new EnumMap<>(ApplyOutcome.class);
         List<RecordError> errors = new ArrayList<>();

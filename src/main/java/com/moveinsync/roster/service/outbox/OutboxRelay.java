@@ -11,6 +11,7 @@ import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
 import org.springframework.transaction.support.TransactionTemplate;
 
+import com.moveinsync.roster.config.RosterMetrics;
 import com.moveinsync.roster.entity.OutboxEvent;
 import com.moveinsync.roster.repository.OutboxRepository;
 
@@ -27,12 +28,13 @@ public class OutboxRelay {
     private final OutboxRepository outbox;
     private final EventPublisher publisher;
     private final TransactionTemplate tx;
+    private final RosterMetrics metrics;
     private final boolean enabled;
     private final int batchSize;
     private final int maxAttempts;
     private final int retentionDays;
 
-    public OutboxRelay(OutboxRepository outbox, EventPublisher publisher, TransactionTemplate tx,
+    public OutboxRelay(OutboxRepository outbox, EventPublisher publisher, TransactionTemplate tx, RosterMetrics metrics,
                        @Value("${roster.outbox.relay-enabled}") boolean enabled,
                        @Value("${roster.outbox.batch-size}") int batchSize,
                        @Value("${roster.outbox.max-attempts}") int maxAttempts,
@@ -40,6 +42,7 @@ public class OutboxRelay {
         this.outbox = outbox;
         this.publisher = publisher;
         this.tx = tx;
+        this.metrics = metrics;
         this.enabled = enabled;
         this.batchSize = batchSize;
         this.maxAttempts = maxAttempts;
@@ -62,10 +65,12 @@ public class OutboxRelay {
                 try {
                     publisher.publish(event);
                     event.markPublished(Instant.now());
+                    metrics.published(event.getType());
                     count++;
                 } catch (Exception e) {
                     // One failing event must not block the others; it is retried on the next poll.
                     event.markFailed(e.getClass().getSimpleName());
+                    metrics.publishFailed(event.getType());
                     log.warn("Publish failed eventId={} type={} attempts={} error={}",
                             event.getEventId(), event.getType(), event.getAttempts(), event.getLastError());
                     if (event.getAttempts() >= maxAttempts) {

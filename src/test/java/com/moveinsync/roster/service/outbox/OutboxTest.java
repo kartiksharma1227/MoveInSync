@@ -25,6 +25,7 @@ import org.springframework.transaction.support.TransactionTemplate;
 import com.moveinsync.roster.IntegrationTest;
 import com.moveinsync.roster.TestPublisherConfig.SimulatedCrash;
 import com.moveinsync.roster.config.CurrentUser;
+import com.moveinsync.roster.config.RosterMetrics;
 import com.moveinsync.roster.repository.OutboxRepository;
 import com.moveinsync.roster.service.employee.EmployeeService;
 import com.moveinsync.roster.service.employee.EmployeeService.TransportRequest;
@@ -49,6 +50,9 @@ class OutboxTest extends IntegrationTest {
 
     @Autowired
     TransactionTemplate tx;
+
+    @Autowired
+    RosterMetrics metrics;
 
     /** Other tests leave events behind (the relay is off in tests), so start each test with an empty queue. */
     @BeforeEach
@@ -119,7 +123,7 @@ class OutboxTest extends IntegrationTest {
         assertThat(bookingStatus(id, futureTrip)).isEqualTo("CONFIRMED");
 
         // 4. "Restart": a brand-new relay with no memory of the old one recovers purely from the database.
-        OutboxRelay restarted = new OutboxRelay(outboxRepository, publisher, tx, true, 500, 10, 7);
+        OutboxRelay restarted = new OutboxRelay(outboxRepository, publisher, tx, metrics, true, 500, 10, 7);
         drain(restarted);
 
         assertThat(unpublishedEvents(id)).isZero();
@@ -211,7 +215,7 @@ class OutboxTest extends IntegrationTest {
         CountDownLatch start = new CountDownLatch(1);
         List<Future<?>> runs = new ArrayList<>();
         for (int i = 0; i < 4; i++) {
-            OutboxRelay instance = new OutboxRelay(outboxRepository, publisher, tx, true, 5, 10, 7); // small batches
+            OutboxRelay instance = new OutboxRelay(outboxRepository, publisher, tx, metrics, true, 5, 10, 7); // small batches
             runs.add(pool.submit(() -> {
                 start.await();
                 drain(instance);

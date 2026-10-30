@@ -26,6 +26,25 @@ public interface OutboxRepository extends JpaRepository<OutboxEvent, Long> {
             """, nativeQuery = true)
     List<OutboxEvent> lockNextBatch(@Param("maxAttempts") int maxAttempts, @Param("limit") int limit);
 
+    // ---- For monitoring. All three only touch unpublished rows, which the partial index keeps small. ----
+
+    /** Queue depth: events still waiting to be published. */
+    @Query(value = "SELECT count(*) FROM outbox_event WHERE published_at IS NULL AND attempts < :maxAttempts",
+            nativeQuery = true)
+    long countPending(@Param("maxAttempts") int maxAttempts);
+
+    /** Poison events the relay gave up on, waiting for a human. */
+    @Query(value = "SELECT count(*) FROM outbox_event WHERE published_at IS NULL AND attempts >= :maxAttempts",
+            nativeQuery = true)
+    long countParked(@Param("maxAttempts") int maxAttempts);
+
+    /** Lag: how long the oldest waiting event has been waiting, in seconds (null if none). */
+    @Query(value = """
+            SELECT EXTRACT(EPOCH FROM (now() - min(created_at))) FROM outbox_event
+            WHERE published_at IS NULL AND attempts < :maxAttempts
+            """, nativeQuery = true)
+    Double oldestPendingAgeSeconds(@Param("maxAttempts") int maxAttempts);
+
     @Modifying
     @Query("DELETE FROM OutboxEvent e WHERE e.publishedAt < :cutoff")
     int deletePublishedBefore(@Param("cutoff") Instant cutoff);
