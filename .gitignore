@@ -11,6 +11,7 @@ target/
 ARCHITECTURE_PLAN.md
 PROJECT_PROMPT.md
 questions.md
+leftovers.md
 
 ### OS ###
 .DS_Store
