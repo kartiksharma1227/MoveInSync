@@ -45,7 +45,12 @@ class IngestConcurrencyTest extends IntegrationTest {
             tasks.add(() -> ingestService.ingest("ACME",
                     List.of(event("UPDATE", id, v, T.plusSeconds(v), hr("BLR-01", "V" + v)))));
         }
-        runAllAtOnce(tasks);
+        List<BatchResult> results = runAllAtOnce(tasks);
+
+        // No lost and no phantom events: exactly one outbox row per change that was really applied.
+        int applied = 1 + results.stream().mapToInt(BatchResult::applied).sum(); // + the initial CREATE
+        assertThat(jdbc.queryForObject("SELECT count(*) FROM outbox_event WHERE aggregate_id = ?", Integer.class, id))
+                .isEqualTo(applied);
 
         Map<String, Object> row = jdbc.queryForMap(
                 "SELECT count(*) OVER () AS rows, hr_version, shift FROM employee WHERE tenant_id = 'ACME' AND employee_id = ?", id);

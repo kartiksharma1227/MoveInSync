@@ -8,6 +8,7 @@ import java.util.List;
 import java.util.Map;
 import java.util.UUID;
 
+import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
@@ -18,6 +19,7 @@ import org.springframework.test.context.ActiveProfiles;
 import org.springframework.test.web.servlet.MockMvc;
 
 import com.jayway.jsonpath.JsonPath;
+import com.moveinsync.roster.TestPublisherConfig.RecordingPublisher;
 
 import tools.jackson.databind.ObjectMapper;
 
@@ -26,14 +28,22 @@ import tools.jackson.databind.ObjectMapper;
  * container. The 'dev' profile loads the seed tenants and offices and enables the /dev/token endpoint.
  * Tests create employees with fresh random IDs, so they never interfere with each other.
  */
-@Import(TestcontainersConfiguration.class)
-@SpringBootTest
+@Import({TestcontainersConfiguration.class, TestPublisherConfig.class})
+@SpringBootTest(properties = "roster.outbox.relay-enabled=false") // tests run the relay by hand, so they're deterministic
 @AutoConfigureMockMvc
 @ActiveProfiles("dev")
 public abstract class IntegrationTest {
 
     @Autowired
     protected MockMvc mockMvc;
+
+    @Autowired
+    protected RecordingPublisher publisher;
+
+    @BeforeEach
+    void resetPublisher() {
+        publisher.reset();
+    }
 
     @Autowired
     protected ObjectMapper json;
