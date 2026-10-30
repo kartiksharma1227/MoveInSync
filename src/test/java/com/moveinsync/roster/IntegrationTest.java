@@ -10,6 +10,7 @@ import java.util.UUID;
 
 import org.junit.jupiter.api.BeforeEach;
 import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.boot.micrometer.metrics.test.autoconfigure.AutoConfigureMetrics;
 import org.springframework.boot.test.context.SpringBootTest;
 import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
 import org.springframework.context.annotation.Import;
@@ -31,6 +32,7 @@ import tools.jackson.databind.ObjectMapper;
 @Import({TestcontainersConfiguration.class, TestPublisherConfig.class})
 @SpringBootTest(properties = "roster.outbox.relay-enabled=false") // tests run the relay by hand, so they're deterministic
 @AutoConfigureMockMvc
+@AutoConfigureMetrics // keep /actuator/prometheus on in tests (Spring turns metric export off by default there)
 @ActiveProfiles("dev")
 public abstract class IntegrationTest {
 
