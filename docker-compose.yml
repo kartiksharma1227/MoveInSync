@@ -26,6 +26,8 @@ services:
       DB_USER: roster
       DB_PASSWORD: roster
       SPRING_PROFILES_ACTIVE: dev
+      # Set OUTBOX_RELAY_ENABLED=false to pause event publishing (used by scripts/crash-demo.sh).
+      ROSTER_OUTBOX_RELAYENABLED: ${OUTBOX_RELAY_ENABLED:-true}
     ports:
       - "8080:8080"
 

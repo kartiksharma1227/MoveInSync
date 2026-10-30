@@ -37,8 +37,13 @@ roster:
   ingest:
     max-batch-size: 1000
   outbox:
+    # Turned off in tests (they run the relay by hand) and in the live crash demo (to hold the crash window open).
+    relay-enabled: true
     poll-interval-ms: 500
     batch-size: 500
+    # An event that fails this many times is parked (no longer retried) for an engineer to look at.
+    max-attempts: 10
+    retention-days: 7
   jwt:
     # Dev default only. Real deployments must set JWT_SECRET (at least 32 bytes for HS256).
     secret: ${JWT_SECRET:dev-only-secret-change-me-0123456789abcdef}
