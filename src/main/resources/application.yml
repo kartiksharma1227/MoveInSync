@@ -19,6 +19,10 @@ spring:
           time_zone: UTC
   flyway:
     locations: classpath:db/migration
+  mvc:
+    problemdetails:
+      # Errors are returned as standard RFC 9457 JSON: {status, title, detail}.
+      enabled: true
 
 management:
   endpoints:
