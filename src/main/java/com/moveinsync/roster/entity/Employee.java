@@ -124,6 +124,34 @@ public class Employee extends BaseTenantEntity {
         return ApplyOutcome.APPLIED;
     }
 
+    /**
+     * A nightly file lists this employee. Same as an HR change, with one addition: someone deactivated only because
+     * an earlier file left them out (which keeps the version) is reactivated when they reappear unchanged.
+     */
+    public ApplyOutcome applySnapshot(HrProfile fileHr, long version, Instant at) {
+        boolean reappeared = status == Status.INACTIVE && version == hrVersion
+                && RowHasher.hash(fileHr).equals(rowHash);
+        if (reappeared) {
+            status = Status.ACTIVE;
+            lastHrChangeAt = at;
+            return ApplyOutcome.APPLIED;
+        }
+        return applyHr(fileHr, version, at);
+    }
+
+    /**
+     * The nightly file no longer lists this employee. Deactivates without consuming an HR version: we only inferred
+     * the exit, so any real HR change that arrives later (with a higher version) still applies and reactivates them.
+     */
+    public ApplyOutcome markMissingFromSnapshot(Instant snapshotAt) {
+        if (status == Status.INACTIVE) {
+            return ApplyOutcome.DUPLICATE;
+        }
+        status = Status.INACTIVE;
+        lastHrChangeAt = snapshotAt;
+        return ApplyOutcome.APPLIED;
+    }
+
     /** Transport-admin edit. HR fields and the HR version are never touched. */
     public void updateTransport(TransportProfile newTransport) {
         transport = newTransport;

@@ -81,7 +81,7 @@ public class IngestService {
                 rejected++;
                 continue;
             }
-            Optional<ApplyOutcome> outcome = applyWithRetry(tenantId, toEvent(request));
+            Optional<ApplyOutcome> outcome = apply(tenantId, toEvent(request));
             if (outcome.isEmpty()) {
                 errors.add(new RecordError(i, request.eventId(), request.employeeId(),
                         List.of(new FieldError("employeeId", "UNKNOWN_EMPLOYEE"))));
@@ -137,10 +137,12 @@ public class IngestService {
     }
 
     /**
-     * Runs one event in its own transaction. We use TransactionTemplate rather than @Transactional because
-     * calling a @Transactional method on 'this' bypasses Spring's proxy, so no transaction would start.
+     * Applies one event in its own transaction. Also used by the nightly reconciliation, so both channels share
+     * exactly the same rules. We use TransactionTemplate rather than @Transactional because calling a
+     * @Transactional method on 'this' bypasses Spring's proxy, so no transaction would start.
+     * @return the outcome, or empty if the employee is unknown and this event may not create them
      */
-    private Optional<ApplyOutcome> applyWithRetry(String tenantId, RosterEvent event) {
+    public Optional<ApplyOutcome> apply(String tenantId, RosterEvent event) {
         try {
             return tx.execute(status -> applyOne(tenantId, event));
         } catch (DataIntegrityViolationException e) {
