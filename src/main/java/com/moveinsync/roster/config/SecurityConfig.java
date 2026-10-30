@@ -1,5 +1,6 @@
 package com.moveinsync.roster.config;
 
+import java.io.IOException;
 import java.nio.charset.StandardCharsets;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
@@ -7,6 +8,8 @@ import javax.crypto.spec.SecretKeySpec;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+import org.springframework.http.HttpStatus;
+import org.springframework.http.MediaType;
 import org.springframework.security.config.annotation.method.configuration.EnableMethodSecurity;
 import org.springframework.security.config.annotation.web.builders.HttpSecurity;
 import org.springframework.security.config.http.SessionCreationPolicy;
@@ -18,26 +21,40 @@ import org.springframework.security.oauth2.jwt.JwtValidators;
 import org.springframework.security.oauth2.jwt.NimbusJwtDecoder;
 import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationConverter;
 import org.springframework.security.oauth2.server.resource.authentication.JwtGrantedAuthoritiesConverter;
+import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
+import org.springframework.security.web.access.AccessDeniedHandler;
+
+import jakarta.servlet.http.HttpServletRequest;
+import jakarta.servlet.http.HttpServletResponse;
+import tools.jackson.databind.ObjectMapper;
 
 /**
  * Every API call needs a valid JWT that names a tenant. Only the health check (for Docker and load balancers) and
- * the dev-only token endpoint are public. Which role may call what is declared on each controller method.
+ * the dev-only token endpoint are public. Metrics need the OPERATOR role (Prometheus scrapes with a service token).
+ * Which role may call each API is declared on the controller methods.
  */
 @Configuration
 @EnableMethodSecurity
 public class SecurityConfig {
 
     @Bean
-    SecurityFilterChain securityFilterChain(HttpSecurity http) throws Exception {
+    SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper json) throws Exception {
+        AuthenticationEntryPoint unauthorized = (req, res, e) -> writeError(json, req, res, HttpStatus.UNAUTHORIZED, "UNAUTHORIZED");
+        AccessDeniedHandler forbidden = (req, res, e) -> writeError(json, req, res, HttpStatus.FORBIDDEN, "FORBIDDEN");
         http
             .csrf(csrf -> csrf.disable()) // no browser sessions or cookies, so CSRF does not apply
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
             .authorizeHttpRequests(auth -> auth
                 .requestMatchers("/actuator/health", "/actuator/health/**").permitAll()
                 .requestMatchers("/dev/token").permitAll() // the controller only exists in the dev profile
+                .requestMatchers("/actuator/prometheus", "/actuator/metrics", "/actuator/metrics/**").hasRole("OPERATOR")
                 .anyRequest().authenticated())
-            .oauth2ResourceServer(oauth -> oauth.jwt(jwt -> jwt.jwtAuthenticationConverter(rolesFromToken())));
+            .exceptionHandling(e -> e.authenticationEntryPoint(unauthorized).accessDeniedHandler(forbidden))
+            .oauth2ResourceServer(oauth -> oauth
+                .jwt(jwt -> jwt.jwtAuthenticationConverter(rolesFromToken()))
+                .authenticationEntryPoint(unauthorized)
+                .accessDeniedHandler(forbidden));
         return http.build();
     }
 
@@ -63,5 +80,13 @@ public class SecurityConfig {
         JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
         converter.setJwtGrantedAuthoritiesConverter(roles);
         return converter;
+    }
+
+    /** Security errors use the same body as every other error. */
+    private static void writeError(ObjectMapper json, HttpServletRequest request, HttpServletResponse response,
+                                   HttpStatus status, String code) throws IOException {
+        response.setStatus(status.value());
+        response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
+        json.writeValue(response.getOutputStream(), ApiExceptionHandler.body(status, code, request.getRequestURI()));
     }
 }

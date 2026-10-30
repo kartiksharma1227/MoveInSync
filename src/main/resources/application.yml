@@ -27,10 +27,11 @@ spring:
           time_zone: UTC
   flyway:
     locations: classpath:db/migration
-  mvc:
-    problemdetails:
-      # Errors are returned as standard RFC 9457 JSON: {status, title, detail}.
-      enabled: true
+
+logging:
+  pattern:
+    # Every log line carries the request's correlation ID (empty for background jobs).
+    correlation: "[cid=%X{correlationId:-}] "
 
 management:
   endpoints:
