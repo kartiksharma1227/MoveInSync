@@ -1,0 +1,59 @@
+# Prometheus alert rules for HR Roster Sync. Load with `rule_files: [alerts.yml]` in prometheus.yml;
+# Alertmanager routes severity=page to on-call and severity=ticket to the team queue.
+groups:
+  - name: roster-sync
+    rules:
+      - alert: NightlyRunHeldBySafetyBrake
+        expr: increase(roster_recon_brake_tripped_total[15m]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Nightly roster run held for tenant {{ $labels.tenant }}"
+          description: "The safety brake stopped a nightly file that is missing too many active employees. Nobody was deactivated. Review the run (GET /api/v1/reconciliations/{id}) and approve or reject it."
+
+      - alert: NightlyRunFailed
+        expr: increase(roster_recon_runs_total{status="failed"}[1h]) > 0
+        labels:
+          severity: page
+        annotations:
+          summary: "Nightly roster run failed for tenant {{ $labels.tenant }}"
+          description: "A nightly run ended FAILED (bad file, or stuck and recovered by the sweeper). Re-uploading the file is safe."
+
+      - alert: OutboxLagHigh
+        expr: roster_outbox_lag_seconds > 60
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "Change events are more than 60 s behind"
+          description: "Downstream effects (e.g. booking cancellations for leavers) are delayed. Check the relay and roster_outbox_publish_failures_total."
+
+      - alert: OutboxEventsParked
+        expr: roster_outbox_parked > 0
+        labels:
+          severity: ticket
+        annotations:
+          summary: "{{ $value }} change event(s) parked after repeated publish failures"
+          description: "Fix the cause, then reset attempts to 0 on those outbox_event rows to release them."
+
+      - alert: HighRejectionRate
+        expr: |
+          sum by (tenant) (rate(roster_events_total{outcome="rejected"}[15m]))
+            / sum by (tenant) (rate(roster_events_total[15m])) > 0.05
+        for: 15m
+        labels:
+          severity: ticket
+        annotations:
+          summary: "More than 5% of HR events rejected for tenant {{ $labels.tenant }}"
+          description: "The client's HR integration is sending invalid records. The per-record reports name the field and code."
+
+      - alert: HighServerErrorRate
+        expr: |
+          sum(rate(http_server_requests_seconds_count{status=~"5.."}[5m]))
+            / sum(rate(http_server_requests_seconds_count[5m])) > 0.01
+        for: 5m
+        labels:
+          severity: page
+        annotations:
+          summary: "More than 1% of API requests are failing with 5xx"
+          description: "Look up failing requests by correlationId in the logs. 503 DATABASE_UNAVAILABLE means the database is unreachable."
