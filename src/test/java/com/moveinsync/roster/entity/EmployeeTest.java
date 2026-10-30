@@ -166,6 +166,40 @@ class EmployeeTest {
     }
 
     @Test
+    void missingFromSnapshotDeactivatesWithoutConsumingAnHrVersion() {
+        Employee e = employeeAtVersion5();
+
+        ApplyOutcome outcome = e.markMissingFromSnapshot(T2);
+
+        assertThat(outcome).isEqualTo(ApplyOutcome.APPLIED);
+        assertThat(e.getStatus()).isEqualTo(Status.INACTIVE);
+        assertThat(e.getHrVersion()).isEqualTo(5); // HR's next real version (6) will still apply
+        assertThat(e.markMissingFromSnapshot(T3)).isEqualTo(ApplyOutcome.DUPLICATE);
+    }
+
+    @Test
+    void employeeWhoReappearsUnchangedInTheNextFileIsReactivated() {
+        Employee e = employeeAtVersion5();
+        e.markMissingFromSnapshot(T2);
+
+        ApplyOutcome outcome = e.applySnapshot(hr("BLR-01", "S0900"), 5, T3);
+
+        assertThat(outcome).isEqualTo(ApplyOutcome.APPLIED);
+        assertThat(e.getStatus()).isEqualTo(Status.ACTIVE);
+    }
+
+    @Test
+    void realHrChangeAfterBeingMarkedMissingReactivates() {
+        Employee e = employeeAtVersion5();
+        e.markMissingFromSnapshot(T2);
+
+        ApplyOutcome outcome = e.applyHr(hr("HYD-01", "S0900"), 6, T3);
+
+        assertThat(outcome).isEqualTo(ApplyOutcome.APPLIED);
+        assertThat(e.getStatus()).isEqualTo(Status.ACTIVE);
+    }
+
+    @Test
     void toStringContainsNoPersonalData() {
         Employee e = employeeAtVersion5();
 
