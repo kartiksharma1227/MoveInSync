@@ -51,11 +51,18 @@ public class ReconciliationService {
     private static final Logger log = LoggerFactory.getLogger(ReconciliationService.class);
     private static final int PAGE_SIZE = 1000;
     private static final Duration MAX_CLOCK_SKEW = Duration.ofMinutes(5);
+    private static final int MAX_REJECTION_PAGE = 1000;
 
     public record RunView(long id, String status, Instant snapshotAt, String fileSha256, int rowsTotal,
                           int rowsRejected, Integer activeCount, Integer missingCount, Double missingRatio,
                           BigDecimal threshold, int created, int updated, int deactivated, int failed,
                           String decidedBy, Instant decidedAt, Object rejections) {
+    }
+
+    public record RejectionItem(long row, String employeeId, Object errors) {
+    }
+
+    public record RejectionPage(List<RejectionItem> items, Long nextAfterRow) {
     }
 
     private final ReconciliationRunRepository runs;
@@ -158,6 +165,21 @@ public class ReconciliationService {
 
     public RunView get(CurrentUser user, long runId) {
         return view(runs.findByIdAndTenantId(runId, user.tenantId()).orElseThrow(this::notFound));
+    }
+
+    /**
+     * The complete per-row error report of a run, one page at a time.
+     * @param afterRow return rows after this row number (0 for the first page)
+     * @return the page, plus where the next page starts (null when there are no more)
+     */
+    public RejectionPage rejections(CurrentUser user, long runId, long afterRow, int limit) {
+        runs.findByIdAndTenantId(runId, user.tenantId()).orElseThrow(this::notFound); // tenant check
+        int pageSize = Math.max(1, Math.min(limit, MAX_REJECTION_PAGE));
+        List<RejectionItem> items = snapshots.rejectionsPage(runId, afterRow, pageSize).stream()
+                .map(r -> new RejectionItem(r.row(), r.employeeId(), json.readTree(r.errorsJson())))
+                .toList();
+        Long next = items.size() == pageSize ? items.get(items.size() - 1).row() : null;
+        return new RejectionPage(items, next);
     }
 
     /** Applies the differences page by page, then deactivates the missing. Safe to repeat: every step is idempotent. */

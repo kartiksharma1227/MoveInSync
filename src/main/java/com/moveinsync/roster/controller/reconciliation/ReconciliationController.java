@@ -19,6 +19,7 @@ import org.springframework.web.multipart.MultipartFile;
 
 import com.moveinsync.roster.config.CurrentUser;
 import com.moveinsync.roster.service.reconciliation.ReconciliationService;
+import com.moveinsync.roster.service.reconciliation.ReconciliationService.RejectionPage;
 import com.moveinsync.roster.service.reconciliation.ReconciliationService.RunView;
 
 /** HR uploads the nightly file; operators review held runs and approve or reject them. */
@@ -47,6 +48,15 @@ public class ReconciliationController {
     @PreAuthorize("hasRole('OPERATOR')")
     public RunView get(@AuthenticationPrincipal Jwt jwt, @PathVariable long id) {
         return service.get(CurrentUser.from(jwt), id);
+    }
+
+    /** Every rejected row of a run, page by page. HR needs it to fix the file; operators to judge a held run. */
+    @GetMapping("/{id}/rejections")
+    @PreAuthorize("hasAnyRole('OPERATOR', 'HR_SYSTEM')")
+    public RejectionPage rejections(@AuthenticationPrincipal Jwt jwt, @PathVariable long id,
+                                    @RequestParam(defaultValue = "0") long afterRow,
+                                    @RequestParam(defaultValue = "500") int limit) {
+        return service.rejections(CurrentUser.from(jwt), id, afterRow, limit);
     }
 
     @PostMapping("/{id}/approve")
