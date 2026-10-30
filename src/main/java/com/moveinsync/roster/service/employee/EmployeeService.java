@@ -9,7 +9,9 @@ import com.moveinsync.roster.config.CurrentUser;
 import com.moveinsync.roster.entity.Employee;
 import com.moveinsync.roster.entity.Employee.HrProfile;
 import com.moveinsync.roster.entity.Employee.TransportProfile;
+import com.moveinsync.roster.entity.OutboxEvent;
 import com.moveinsync.roster.repository.EmployeeRepository;
+import com.moveinsync.roster.service.outbox.OutboxWriter;
 
 import jakarta.validation.constraints.Size;
 
@@ -38,9 +40,11 @@ public class EmployeeService {
     }
 
     private final EmployeeRepository employees;
+    private final OutboxWriter outboxWriter;
 
-    public EmployeeService(EmployeeRepository employees) {
+    public EmployeeService(EmployeeRepository employees, OutboxWriter outboxWriter) {
         this.employees = employees;
+        this.outboxWriter = outboxWriter;
     }
 
     @Transactional(readOnly = true)
@@ -59,6 +63,7 @@ public class EmployeeService {
     public EmployeeView updateTransport(CurrentUser user, String employeeId, TransportRequest request) {
         Employee employee = find(user.tenantId(), employeeId);
         employee.updateTransport(new TransportProfile(request.pickupPoint(), request.specialAssistance()));
+        outboxWriter.record(OutboxEvent.Type.EMPLOYEE_TRANSPORT_UPDATED, employee);
         // Flush now so a concurrent-edit conflict (@Version) surfaces here as an exception, not after we return.
         employees.saveAndFlush(employee);
         return EmployeeView.from(employee, true);

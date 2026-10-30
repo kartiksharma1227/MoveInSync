@@ -19,8 +19,10 @@ import com.moveinsync.roster.core.RecordValidator.FieldError;
 import com.moveinsync.roster.core.RosterEvent;
 import com.moveinsync.roster.entity.Employee;
 import com.moveinsync.roster.entity.Employee.HrProfile;
+import com.moveinsync.roster.entity.OutboxEvent;
 import com.moveinsync.roster.repository.EmployeeRepository;
 import com.moveinsync.roster.repository.OfficeRepository;
+import com.moveinsync.roster.service.outbox.OutboxWriter;
 
 /**
  * Applies a batch of HR events. Every record is validated on its own and applied in its own transaction,
@@ -54,11 +56,14 @@ public class IngestService {
 
     private final EmployeeRepository employees;
     private final OfficeRepository offices;
+    private final OutboxWriter outboxWriter;
     private final TransactionTemplate tx;
 
-    public IngestService(EmployeeRepository employees, OfficeRepository offices, TransactionTemplate tx) {
+    public IngestService(EmployeeRepository employees, OfficeRepository offices, OutboxWriter outboxWriter,
+                         TransactionTemplate tx) {
         this.employees = employees;
         this.offices = offices;
+        this.outboxWriter = outboxWriter;
         this.tx = tx;
     }
 
@@ -146,18 +151,29 @@ public class IngestService {
         }
     }
 
-    /** @return the outcome, or empty if the employee is unknown and this event may not create them */
+    /**
+     * Applies one event and, if it changed anything, records the change event in the same transaction.
+     * @return the outcome, or empty if the employee is unknown and this event may not create them
+     */
     private Optional<ApplyOutcome> applyOne(String tenantId, RosterEvent event) {
         Optional<Employee> existing = employees.findForUpdate(tenantId, event.employeeId());
         if (existing.isPresent()) {
             // Changes are saved at commit by JPA dirty checking; no explicit save needed.
-            return Optional.of(event.applyTo(existing.get()));
+            ApplyOutcome outcome = event.applyTo(existing.get());
+            if (outcome == ApplyOutcome.APPLIED) {
+                OutboxEvent.Type type = event instanceof RosterEvent.Deactivate
+                        ? OutboxEvent.Type.EMPLOYEE_DEACTIVATED
+                        : OutboxEvent.Type.EMPLOYEE_UPDATED;
+                outboxWriter.record(type, existing.get());
+            }
+            return Optional.of(outcome);
         }
         Optional<Employee> created = event.newEmployee(tenantId);
         if (created.isEmpty()) {
             return Optional.empty();
         }
         employees.saveAndFlush(created.get());
+        outboxWriter.record(OutboxEvent.Type.EMPLOYEE_CREATED, created.get());
         return Optional.of(ApplyOutcome.APPLIED);
     }
 
