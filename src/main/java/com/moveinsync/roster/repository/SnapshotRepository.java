@@ -101,4 +101,32 @@ public class SnapshotRepository {
     public void deleteRun(long runId) {
         jdbc.update("DELETE FROM snapshot_row WHERE run_id = ?", runId);
     }
+
+    // ---- The complete per-row error report (kept after the run, unlike staged rows) ----
+
+    /** One rejected file row: its number, its ID if it had a valid one, and the error codes as JSON. */
+    public record RejectionRow(long row, String employeeId, String errorsJson) {
+    }
+
+    public void insertRejections(long runId, List<RejectionRow> rows) {
+        jdbc.batchUpdate("INSERT INTO reconciliation_rejection (run_id, row_number, employee_id, errors) "
+                + "VALUES (?, ?, ?, ?::jsonb)", rows, rows.size(), (ps, row) -> {
+                    ps.setLong(1, runId);
+                    ps.setLong(2, row.row());
+                    ps.setString(3, row.employeeId());
+                    ps.setString(4, row.errorsJson());
+                });
+    }
+
+    /** The next page of rejections after a row number ("keyset" paging, so deep pages are as fast as the first). */
+    public List<RejectionRow> rejectionsPage(long runId, long afterRow, int limit) {
+        return jdbc.query("""
+                SELECT row_number, employee_id, errors::text AS errors FROM reconciliation_rejection
+                WHERE run_id = ? AND row_number > ?
+                ORDER BY row_number
+                LIMIT ?
+                """, (rs, i) -> new RejectionRow(rs.getLong("row_number"), rs.getString("employee_id"),
+                        rs.getString("errors")),
+                runId, afterRow, limit);
+    }
 }

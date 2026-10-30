@@ -26,6 +26,7 @@ import com.moveinsync.roster.core.RowHasher;
 import com.moveinsync.roster.entity.Employee.HrProfile;
 import com.moveinsync.roster.repository.OfficeRepository;
 import com.moveinsync.roster.repository.SnapshotRepository;
+import com.moveinsync.roster.repository.SnapshotRepository.RejectionRow;
 import com.moveinsync.roster.repository.SnapshotRepository.StagedRow;
 
 import tools.jackson.databind.ObjectMapper;
@@ -46,6 +47,7 @@ public class SnapshotStager {
     public record Rejection(long row, String employeeId, List<FieldError> errors) {
     }
 
+    /** @param rejections a preview: the first 100. The complete list is in reconciliation_rejection. */
     public record StageResult(String sha256, int rowsTotal, int rowsRejected, List<Rejection> rejections) {
     }
 
@@ -72,7 +74,8 @@ public class SnapshotStager {
         CSVFormat format = CSVFormat.DEFAULT.builder().setHeader().setSkipHeaderRecord(true).get();
         int total = 0;
         int rejected = 0;
-        List<Rejection> rejections = new ArrayList<>();
+        List<Rejection> preview = new ArrayList<>();           // first 100, returned inline for a quick look
+        List<RejectionRow> rejectionBatch = new ArrayList<>(); // every rejection, written 1,000 at a time
         // Keyed by employee ID so a duplicate inside one batch keeps only the higher version.
         Map<String, StagedRow> batch = new LinkedHashMap<>();
 
@@ -95,8 +98,14 @@ public class SnapshotStager {
                     row = new StagedRow(employeeId, version, RowHasher.hash(hr), json.writeValueAsString(hr), true);
                 } else {
                     rejected++;
-                    if (rejections.size() < MAX_REPORTED_REJECTIONS) {
-                        rejections.add(new Rejection(record.getRecordNumber(), RecordValidator.safeId(employeeId), errors));
+                    Rejection rejection = new Rejection(record.getRecordNumber(), RecordValidator.safeId(employeeId), errors);
+                    if (preview.size() < MAX_REPORTED_REJECTIONS) {
+                        preview.add(rejection);
+                    }
+                    rejectionBatch.add(new RejectionRow(rejection.row(), rejection.employeeId(),
+                            json.writeValueAsString(rejection.errors())));
+                    if (rejectionBatch.size() >= BATCH_SIZE) {
+                        flushRejections(runId, rejectionBatch);
                     }
                     // Still staged (but never applied) so this employee isn't mistaken for "missing".
                     row = RecordValidator.isValidEmployeeId(employeeId)
@@ -110,11 +119,19 @@ public class SnapshotStager {
                 }
             }
             flush(runId, batch);
+            flushRejections(runId, rejectionBatch);
         } catch (IOException | UncheckedIOException e) {
             throw new InvalidFileException("UNREADABLE_FILE");
         }
         snapshots.analyze();
-        return new StageResult(HexFormat.of().formatHex(sha256.digest()), total, rejected, rejections);
+        return new StageResult(HexFormat.of().formatHex(sha256.digest()), total, rejected, preview);
+    }
+
+    private void flushRejections(long runId, List<RejectionRow> rows) {
+        if (!rows.isEmpty()) {
+            snapshots.insertRejections(runId, new ArrayList<>(rows));
+            rows.clear();
+        }
     }
 
     private void flush(long runId, Map<String, StagedRow> batch) {
