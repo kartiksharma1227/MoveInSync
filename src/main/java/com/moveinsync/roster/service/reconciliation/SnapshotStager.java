@@ -96,11 +96,11 @@ public class SnapshotStager {
                 } else {
                     rejected++;
                     if (rejections.size() < MAX_REPORTED_REJECTIONS) {
-                        rejections.add(new Rejection(record.getRecordNumber(), employeeId, errors));
+                        rejections.add(new Rejection(record.getRecordNumber(), RecordValidator.safeId(employeeId), errors));
                     }
                     // Still staged (but never applied) so this employee isn't mistaken for "missing".
-                    boolean usableId = employeeId != null && !employeeId.isBlank() && employeeId.length() <= 64;
-                    row = usableId ? new StagedRow(employeeId, version, "", "{}", false) : null;
+                    row = RecordValidator.isValidEmployeeId(employeeId)
+                            ? new StagedRow(employeeId, version, "", "{}", false) : null;
                 }
                 if (row != null) {
                     batch.merge(row.employeeId(), row, (a, b) -> b.version() > a.version() ? b : a);

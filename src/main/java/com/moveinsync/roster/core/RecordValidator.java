@@ -28,13 +28,28 @@ public class RecordValidator {
         this.rules = List.of(new BasicFieldsRule(), new PhoneRule(), new EmailRule(), new OfficeCodeRule(officeExists));
     }
 
+    /** IDs are short codes like E1001 or emp-42.k. Anything else (spaces, '+', '@' …) may be personal data. */
+    private static final Pattern ID_FORMAT = Pattern.compile("^[A-Za-z0-9._-]{1,64}$");
+
+    public static boolean isValidEmployeeId(String id) {
+        return id != null && ID_FORMAT.matcher(id).matches();
+    }
+
+    /**
+     * The ID if it has the ID format, otherwise null. Reports and logs only ever echo IDs through this, so a name or
+     * phone number sent in an ID field is never repeated back.
+     */
+    public static String safeId(String id) {
+        return isValidEmployeeId(id) ? id : null;
+    }
+
     /** @param hr the HR fields, or null for a deactivate event, which carries none */
     public List<FieldError> validate(String employeeId, long version, HrProfile hr) {
         List<FieldError> errors = new ArrayList<>();
         if (isBlank(employeeId)) {
             errors.add(new FieldError("employeeId", "REQUIRED"));
-        } else if (employeeId.length() > 64) {
-            errors.add(new FieldError("employeeId", "TOO_LONG"));
+        } else if (!isValidEmployeeId(employeeId)) {
+            errors.add(new FieldError("employeeId", "INVALID_FORMAT"));
         }
         if (version <= 0) {
             errors.add(new FieldError("version", "INVALID_VERSION"));

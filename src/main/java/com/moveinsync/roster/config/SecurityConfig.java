@@ -25,7 +25,6 @@ import org.springframework.security.web.AuthenticationEntryPoint;
 import org.springframework.security.web.SecurityFilterChain;
 import org.springframework.security.web.access.AccessDeniedHandler;
 
-import jakarta.servlet.http.HttpServletRequest;
 import jakarta.servlet.http.HttpServletResponse;
 import tools.jackson.databind.ObjectMapper;
 
@@ -40,8 +39,8 @@ public class SecurityConfig {
 
     @Bean
     SecurityFilterChain securityFilterChain(HttpSecurity http, ObjectMapper json) throws Exception {
-        AuthenticationEntryPoint unauthorized = (req, res, e) -> writeError(json, req, res, HttpStatus.UNAUTHORIZED, "UNAUTHORIZED");
-        AccessDeniedHandler forbidden = (req, res, e) -> writeError(json, req, res, HttpStatus.FORBIDDEN, "FORBIDDEN");
+        AuthenticationEntryPoint unauthorized = (req, res, e) -> writeError(json, res, HttpStatus.UNAUTHORIZED, "UNAUTHORIZED");
+        AccessDeniedHandler forbidden = (req, res, e) -> writeError(json, res, HttpStatus.FORBIDDEN, "FORBIDDEN");
         http
             .csrf(csrf -> csrf.disable()) // no browser sessions or cookies, so CSRF does not apply
             .sessionManagement(s -> s.sessionCreationPolicy(SessionCreationPolicy.STATELESS))
@@ -82,11 +81,14 @@ public class SecurityConfig {
         return converter;
     }
 
-    /** Security errors use the same body as every other error. */
-    private static void writeError(ObjectMapper json, HttpServletRequest request, HttpServletResponse response,
-                                   HttpStatus status, String code) throws IOException {
+    /**
+     * Security errors use the same body as every other error. No route is known yet at this point (security runs
+     * before routing), and the raw path is caller input, so "instance" is left empty.
+     */
+    private static void writeError(ObjectMapper json, HttpServletResponse response, HttpStatus status, String code)
+            throws IOException {
         response.setStatus(status.value());
         response.setContentType(MediaType.APPLICATION_PROBLEM_JSON_VALUE);
-        json.writeValue(response.getOutputStream(), ApiExceptionHandler.body(status, code, request.getRequestURI()));
+        json.writeValue(response.getOutputStream(), ApiExceptionHandler.body(status, code, null));
     }
 }

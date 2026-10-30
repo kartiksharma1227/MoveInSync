@@ -8,6 +8,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.HttpStatusCode;
 import org.springframework.http.MediaType;
@@ -15,6 +16,7 @@ import org.springframework.http.ResponseEntity;
 import org.springframework.http.converter.HttpMessageNotReadableException;
 import org.springframework.orm.ObjectOptimisticLockingFailureException;
 import org.springframework.security.access.AccessDeniedException;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.web.ErrorResponse;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.MissingServletRequestParameterException;
@@ -24,6 +26,7 @@ import org.springframework.web.method.annotation.MethodArgumentTypeMismatchExcep
 import org.springframework.web.multipart.MaxUploadSizeExceededException;
 import org.springframework.web.multipart.support.MissingServletRequestPartException;
 import org.springframework.web.server.ResponseStatusException;
+import org.springframework.web.servlet.HandlerMapping;
 
 import jakarta.servlet.http.HttpServletRequest;
 
@@ -85,6 +88,13 @@ public class ApiExceptionHandler {
         return respond(HttpStatus.CONFLICT, "CONCURRENT_MODIFICATION", request, null);
     }
 
+    /** The database can't be reached. Temporary, so tell the client to retry (batches are idempotent). */
+    @ExceptionHandler({CannotCreateTransactionException.class, DataAccessResourceFailureException.class})
+    ResponseEntity<Map<String, Object>> onDatabaseDown(Exception e, HttpServletRequest request) {
+        log.error("Database unavailable correlationId={} type={}", CorrelationIdFilter.current(), e.getClass().getName());
+        return respond(HttpStatus.SERVICE_UNAVAILABLE, "DATABASE_UNAVAILABLE", request, null);
+    }
+
     /** From @PreAuthorize. Must be explicit, or the catch-all below would report it as a 500. */
     @ExceptionHandler(AccessDeniedException.class)
     ResponseEntity<Map<String, Object>> onDenied(HttpServletRequest request) {
@@ -109,22 +119,31 @@ public class ApiExceptionHandler {
 
     private ResponseEntity<Map<String, Object>> respond(HttpStatusCode status, String code, HttpServletRequest request,
                                                         List<?> errors) {
-        Map<String, Object> body = body(status, code, request.getRequestURI());
+        Map<String, Object> body = body(status, code, routeOf(request));
         if (errors != null) {
             body.put("errors", errors);
         }
         return ResponseEntity.status(status).contentType(MediaType.APPLICATION_PROBLEM_JSON).body(body);
     }
 
+    /**
+     * The matched route, e.g. /api/v1/employees/{employeeId}, never the raw path: path values are caller input and
+     * could be personal data. Null when nothing matched (unknown path).
+     */
+    private static String routeOf(HttpServletRequest request) {
+        Object pattern = request.getAttribute(HandlerMapping.BEST_MATCHING_PATTERN_ATTRIBUTE);
+        return pattern instanceof String route ? route : null;
+    }
+
     /** The one error body shape, also used by the security layer for 401 and 403. */
-    public static Map<String, Object> body(HttpStatusCode status, String code, String path) {
+    public static Map<String, Object> body(HttpStatusCode status, String code, String route) {
         Map<String, Object> body = new LinkedHashMap<>();
         body.put("status", status.value());
         HttpStatus known = HttpStatus.resolve(status.value());
         body.put("title", known != null ? known.getReasonPhrase() : "Error");
         body.put("code", code);
         body.put("detail", detailFor(status.value()));
-        body.put("instance", path);
+        body.put("instance", route);
         body.put("correlationId", CorrelationIdFilter.current());
         return body;
     }
@@ -142,6 +161,7 @@ public class ApiExceptionHandler {
             case 404 -> "The requested resource was not found.";
             case 409 -> "The request conflicts with the current state of the resource.";
             case 413 -> "The request is too large.";
+            case 503 -> "Temporarily unavailable. Retry the request; it is safe to resend.";
             case 500 -> "An unexpected error occurred. Quote the correlation ID when reporting it.";
             default -> "The request could not be completed.";
         };
