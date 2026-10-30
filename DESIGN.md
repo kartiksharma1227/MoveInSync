@@ -93,7 +93,10 @@ after the export are excluded. Every step is idempotent, so a crashed run can si
 
 | What fails | What the user sees | How the system recovers |
 |---|---|---|
-| Database down mid-batch | 5xx for that request; earlier records in the batch are committed | Client retries the whole batch: already-applied records come back `duplicate`, so retrying is safe |
+| Database down mid-batch | **503 `DATABASE_UNAVAILABLE`** at once (no per-record slow failures); earlier records stay committed | Client retries the whole batch: already-applied records come back `duplicate`, so retrying is safe |
+| Another transaction holds an employee's row lock too long | That record: `LOCK_TIMEOUT` (retryable); the rest of the batch is applied | `lock_timeout` 5 s bounds the wait; resend the batch |
+| One record hits an unexpected DB error | That record: `PROCESSING_FAILED`; the batch continues | Fix the cause, resend (idempotent) |
+| Slow query / exhausted pool | Error after 60 s statement timeout / 10 s pool wait, never an endless hang | Bounded by `statement_timeout` and Hikari `connection-timeout` |
 | App crashes before an event's commit | Request fails | Nothing was written (one transaction); HR's retry applies it |
 | **App crashes after commit, before publish** | Request succeeded; side effect briefly delayed | Event row is on disk; any restarted relay publishes it (`crashBetweenCommitAndPublish…`, `crash-demo.sh`) |
 | Publisher / broker down | Nothing; `roster_outbox_lag_seconds` rises | Failure counted, retried next poll; other events keep flowing |
@@ -106,6 +109,8 @@ after the export are excluded. Every step is idempotent, so a crashed run can si
 | Concurrent transport-admin edits | 409 `CONCURRENT_MODIFICATION` | Optimistic lock (`@Version`); admin reloads and retries |
 | Truncated or broken nightly file | `AWAITING_APPROVAL` with `missingCount` | Safety brake holds the whole run; operator approves or rejects |
 | Bad rows in the nightly file | Rejections listed (row, employeeId, field, code) | Not applied, but still count as present, so nobody is deactivated for a typo |
+| One nightly row fails to apply (e.g. lock timeout) | Run `COMPLETED` with `failed` > 0 | Re-upload the same file: done rows are unchanged, the failed ones apply |
+| Personal data sent in an ID field or URL | `INVALID_FORMAT` / 404 with the route pattern; the value is never echoed | IDs echoed only if they match the ID format |
 | Wrong CSV header / unreadable file | 400 `INVALID_HEADER` / `UNREADABLE_FILE` | Run `FAILED`, staging rows deleted |
 | App crashes mid-reconciliation | Run stuck in `STAGING`/`APPLYING`; next upload gets 409 | Sweeper fails runs with no heartbeat for 60 min and clears staging; re-upload is idempotent |
 | Two uploads for one tenant at once | Second gets 409 `RUN_IN_PROGRESS` | Partial unique index |

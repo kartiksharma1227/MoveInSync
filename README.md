@@ -34,7 +34,7 @@ curl -s localhost:8080/api/v1/reconciliations -H "Authorization: Bearer $TOKEN" 
 | `scripts/demo.sh` | Every main flow end to end: per-record report, replay, out-of-order, tenant isolation, field ownership, nightly run, safety brake + operator decision, metrics, error format |
 | `scripts/crash-demo.sh` | **Live failure:** the app is killed (`kill -9`) after a change commits but before its event is published, and after a restart the event is still delivered and bookings are cancelled |
 
-**Tests:** `./mvnw test` (Docker must be running; Testcontainers starts Postgres). 98 tests, including the 200k
+**Tests:** `./mvnw test` (Docker must be running; Testcontainers starts Postgres). 110 tests, including the 200k
 benchmark and the load test, finish in about 1.5 minutes.
 
 ---
@@ -48,7 +48,7 @@ All endpoints need `Authorization: Bearer <JWT>`. The tenant is taken **only fro
 | `POST /api/v1/events` | `HR_SYSTEM` | Batch of ≤ 1,000 `CREATE` / `UPDATE` / `DEACTIVATE` events → per-record report |
 | `GET /api/v1/employees/{id}` | `TRANSPORT_ADMIN`, `OPERATOR`, `EMPLOYEE` (self) | Read an employee (operators don't see contact details) |
 | `PUT /api/v1/employees/{id}/transport` | `TRANSPORT_ADMIN` | Pickup point and special assistance |
-| `POST /api/v1/reconciliations` (multipart `file`, `snapshotAt`) | `HR_SYSTEM` | Nightly full file → `COMPLETED`, or `AWAITING_APPROVAL` if the safety brake trips |
+| `POST /api/v1/reconciliations` (multipart `file`, `snapshotAt`) | `HR_SYSTEM` | Nightly full file → `COMPLETED`, or `AWAITING_APPROVAL` if the safety brake trips (`snapshotAt` more than 5 min in the future → 400 `INVALID_SNAPSHOT_TIME`) |
 | `GET /api/v1/reconciliations/{id}` | `OPERATOR` | Run status and counts (incl. how many employees the file appears to be missing) |
 | `POST /api/v1/reconciliations/{id}/approve` · `/reject` | `OPERATOR` | Decide a held run |
 | `GET /actuator/health` | none | Liveness |
@@ -57,7 +57,60 @@ All endpoints need `Authorization: Bearer <JWT>`. The tenant is taken **only fro
 
 **Event:** `{eventId, type, employeeId, version, occurredAt, hr: {name, email, phone, managerId, officeCode, shift}}`
 **Nightly CSV:** `employee_id,version,name,email,phone,manager_id,office_code,shift`
-**Every error:** `{status, title, code, detail, instance, correlationId}`, e.g. `code: "EMPLOYEE_NOT_FOUND"`. Input values are never echoed.
+**Every error:** `{status, title, code, detail, instance, correlationId}`, e.g. `code: "EMPLOYEE_NOT_FOUND"`. Input values
+are never echoed, and `instance` is the route pattern (`/api/v1/employees/{employeeId}`), never the raw path.
+**Per-record results** (`POST /events`): `rejected` = the record is invalid (`REQUIRED`, `INVALID_FORMAT`, `TOO_LONG`,
+`UNKNOWN_OFFICE`, `UNKNOWN_EMPLOYEE`, `INVALID_TYPE`, `INVALID_VERSION`); `failed` = valid but couldn't be applied right
+now, **retryable** (`LOCK_TIMEOUT`, `PROCESSING_FAILED`); `versionConflict` is reported too. If the database itself is
+unreachable, the batch stops with **503 `DATABASE_UNAVAILABLE`**, and resending it is safe.
+
+---
+
+## Idempotency key and version comparison
+
+**Key:** `(tenantId, employeeId, version)`, where `version` is the source system's per-employee version number.
+
+**Stored state:** one number per employee, `employee.hr_version` (the version of the last applied HR change). There is
+no "processed events" table: any event at or below the stored version has already been seen or superseded, so this
+single column *is* the deduplication state. That's O(1) per employee instead of a table growing with every event.
+
+Every incoming change (API event or nightly row) is compared with the stored version (`VersionGate`, used by `Employee`):
+
+| Incoming vs stored | Outcome | Effect |
+|---|---|---|
+| `incoming > stored` | `APPLIED` | Change applied, `hr_version` = incoming, one outbox event written |
+| `incoming == stored`, same data (same row hash) | `DUPLICATE` | No-op: a replay |
+| `incoming == stored`, different data | `VERSION_CONFLICT` | No-op, but **reported**: the source reused a version number |
+| `incoming < stored` | `STALE` | Ignored: a newer change is already applied (e.g. v6 arriving after v7) |
+
+- A replay writes **nothing**: no row update (not even `updated_at`), no outbox event. That's proven by
+  `IngestApiTest.replayingTheSameFeedTwiceChangesNothing`.
+- Nightly-file rows go through the same comparison, so a file can never revert a newer real-time change.
+- Concurrent changes for one employee are serialised by a row lock (`SELECT … FOR UPDATE`) before comparing.
+- A source that only has timestamps can use epoch milliseconds as the version. Anything that only increases per employee works.
+
+---
+
+## Field ownership and conflict rule
+
+| Owner | Fields | Changed only by |
+|---|---|---|
+| **HR system** | name, email, phone, manager, office, shift | `POST /events` and the nightly file |
+| **Transport admin** | pickup point, special-assistance needs | `PUT /employees/{id}/transport` |
+
+**Conflict rule:**
+1. Every field has exactly one owner, and only that owner's channel can change it. This is enforced **by types**: an HR change
+   carries an `HrProfile` and can only call `employee.applyHr(...)`, while a transport edit carries a `TransportProfile`
+   and calls `employee.updateTransport(...)`. There is no code path from one to the other's fields.
+2. Transport fields sent inside an HR payload are **ignored**, not applied and not an error.
+3. When HR changes an employee's **office**, the transport-owned pickup point is **kept** (HR may not change it) but
+   flagged `pickupNeedsReview = true`, since it may belong to the old office. The transport admin's next edit clears the flag.
+4. HR **deactivation wins**: the employee becomes inactive and future bookings are cancelled. Transport data is **kept**, so
+   a re-hire gets it back.
+5. Two transport admins editing at once → optimistic lock (`@Version`) → the second gets **409 `CONCURRENT_MODIFICATION`**
+   and reloads.
+6. The nightly file follows the same rules. Deactivating someone because a file *left them out* does **not** consume an HR
+   version, so any real HR change that arrives later still applies (and reactivates them).
 
 ---
 
@@ -67,16 +120,17 @@ All endpoints need `Authorization: Bearer <JWT>`. The tenant is taken **only fro
 |---|---|---|
 | H1 | Invalid record rejected with a per-record error, batch continues | `IngestApiTest.badRecordsAreRejectedOneByOneAndTheGoodOnesStillApply`, `RecordValidatorTest`, `ReconciliationTest.rejectedRowIsReportedButItsEmployeeIsNotTreatedAsMissing` |
 | H2 | Per-employee version order: stale ignored (v7 before v6) | `EmployeeTest.outOfOrder_v7BeforeV6_staleV6IsIgnoredAndV7Wins`, `IngestApiTest.outOfOrder_v7BeforeV6_staleV6IsIgnored` |
-| H3 | Replaying the same feed twice changes nothing | `IngestApiTest.replayingTheSameFeedTwiceChangesNothing` (even `updated_at` is unchanged), `ReconciliationTest.sameFileTwiceChangesNothingTheSecondTime` |
-| H4 | HR never overwrites transport-owned fields | `EmployeeTest.hrUpdateNeverTouchesTransportOwnedFields`, `IngestApiTest.hrOfficeChangeKeepsTheAdminsPickupPointAndFlagsIt` |
+| H3 | Replaying the same feed twice changes nothing | `IngestApiTest.replayingTheSameFeedTwiceChangesNothing` (even `updated_at` is unchanged, and no new outbox events), `ReconciliationTest.sameFileTwiceChangesNothingTheSecondTime` |
+| H4 | HR never overwrites transport-owned fields | `EmployeeTest.hrUpdateNeverTouchesTransportOwnedFields`, `IngestApiTest.hrOfficeChangeKeepsTheAdminsPickupPointAndFlagsIt`, `…transportFieldsSentInsideAnHrEventAreIgnored`, `…employeeCannotEditTransportFieldsEvenTheirOwn` |
 | H5 | 200k-row diff < 60 s, bounded memory | `ReconciliationBenchmarkTest.diffOf200kRowsFinishesUnder60SecondsWithFlatMemory` |
-| H6 | File cut at 120k of 200k → brake holds, nobody deactivated, missing count shown, configurable threshold | `ReconciliationBenchmarkTest.fileCutAt120kOf200kTripsTheBrakeAndDeactivatesNobody`, `ReconciliationTest.brakeHoldsTheRunUntilAnOperatorApproves`, `…thresholdIsConfigurableAndRecordedOnEachRun` |
+| H6 | File cut at 120k of 200k → brake holds, nobody deactivated, missing count shown, configurable threshold | `ReconciliationBenchmarkTest.fileCutAt120kOf200kTripsTheBrakeAndDeactivatesNobody`, `ReconciliationTest.brakeHoldsTheRunUntilAnOperatorApproves`, `…thresholdIsConfigurableAndRecordedOnEachRun`, `…snapshotTakenInTheFutureIsRefusedAndNoRunIsCreated` |
 | H7 | Crash between DB write and event publish → event still delivered | `OutboxTest.crashBetweenCommitAndPublish_eventIsDeliveredAfterRestart` + `scripts/crash-demo.sh` |
 | H8 | Leaver's future bookings cancelled, seats freed | `OutboxTest.deactivationCancelsOnlyFutureBookingsAndFreesTheirSeats` |
 | H9 | Tenant isolation | `IngestApiTest.anotherTenantCannotSeeTheEmployee`, `ReconciliationTest.onlyHrUploadsAndOperatorsSeeOnlyTheirOwnTenantsRuns` |
 | H10 | Concurrency | `IngestConcurrencyTest` (19 threads race versions of one employee, 8 threads race the same CREATE), `OutboxTest.fourRelaysDrainingTogetherDeliverEachEventExactlyOnce` |
-| H11 | No personal data in logs or error responses | `ObservabilityTest.noPersonalDataAppearsInTheLogs`, `ErrorHandlingTest.unexpectedErrorIsAGeneric500AndItsMessageNeverReachesTheResponseOrTheLogs` |
+| H11 | No personal data in logs or error responses | `ObservabilityTest.noPersonalDataAppearsInTheLogs`, `ErrorHandlingTest.unexpectedErrorIsAGeneric500AndItsMessageNeverReachesTheResponseOrTheLogs`, `…errorBodyNamesTheRouteNotTheRawPath`, `IngestApiTest.personalDataInAnIdFieldIsRejectedAndNeverEchoed` |
 | — | Failure injection | `OutboxTest.failedPublishIsRetriedAndDoesNotBlockOtherEvents`, `…poisonEventIsParkedAfterMaxAttemptsWhileOthersFlow`, `ReconciliationTest.runLeftBehindByACrashIsRecoveredAndUnblocksTheTenant` |
+| — | Timeouts and partial failures | `FailureIsolationTest.lockHeldTooLongFailsOnlyThatRecordAndNothingHangs`, `…unexpectedDatabaseErrorFailsOnlyThatRecord`, `…lockedEmployeeFailsOnlyThatRowOfTheNightlyRun`, `IngestServiceDatabaseDownTest` |
 
 ---
 
@@ -157,6 +211,22 @@ data at rest, and distributed tracing.
 
 ---
 
+## Timeouts and partial failures
+
+| What could hang or fail | Bound / behaviour |
+|---|---|
+| Waiting for another transaction's row lock | Postgres `lock_timeout` **5 s** (`roster.db.lock-timeout`) → that record fails with `LOCK_TIMEOUT`, the rest continue |
+| Any single SQL statement | `statement_timeout` **60 s** (`roster.db.statement-timeout`) |
+| Waiting for a pooled connection | Hikari `connection-timeout` **10 s** |
+| Database unreachable | Batch stops at once with **503 `DATABASE_UNAVAILABLE`** instead of failing every record slowly; resend is safe |
+| One record hits an unexpected error | That record → `PROCESSING_FAILED`, the batch continues (`failed` count) |
+| One nightly row fails | Run still `COMPLETED`, with a `failed` count; re-uploading the same file retries just those rows |
+| Event publishing | In-process, so no network wait. A Kafka publisher would bound it with `delivery.timeout.ms`, and failures are retried by the relay anyway |
+
+The timeouts are set once per pooled connection (`connection-init-sql`), so every query is bounded without per-query code.
+
+---
+
 ## Caching
 
 | Cached | Where | Eviction | What can be stale, for how long |
@@ -182,6 +252,12 @@ Nothing else is cached: employee state must be read under its row lock to be cor
 | Ingest latency | `roster_ingest_batch_seconds{quantile}` | p99 > 1 s → investigate |
 | Nightly health | `roster_recon_runs_total{status}`, `roster_recon_brake_tripped_total` | any brake trip → page (a run awaits approval) |
 
+**Alert rules:** [`monitoring/alerts.yml`](monitoring/alerts.yml) holds these as ready-to-load Prometheus rules (brake tripped,
+nightly run failed, outbox lag, parked events, rejection rate, 5xx rate), each with a severity (`page` / `ticket`) and a
+description telling on-call what to do. They're validated with
+`docker run --rm -v $PWD/monitoring:/m --entrypoint promtool prom/prometheus:v3.5.0 check rules /m/alerts.yml`.
+This is how "alert an operator" reaches a human: the brake trip increments a counter, and the rule pages on-call.
+
 Logs are JSON (Elastic Common Schema) in Docker and readable text locally. Every line carries the request's
 `correlationId`, which is also returned in the `X-Correlation-Id` header and in every error body. Logs contain IDs only.
 
@@ -199,6 +275,8 @@ Logs are JSON (Elastic Common Schema) in Docker and readable text locally. Every
 - An HR change of office **keeps** the transport admin's pickup point and flags it for review. Deactivation keeps transport
   data for a possible re-hire, and cancelled bookings are not restored on re-hire.
 - An employee deactivated only because a nightly file left them out is reactivated if a later file lists them again unchanged.
+- **IDs** (`employeeId`, `eventId`) match `[A-Za-z0-9._-]{1,64}`. Anything else (spaces, `+`, `@`) is rejected as
+  `INVALID_FORMAT` and never echoed back, because a value in the wrong field may be personal data.
 
 ---
 
