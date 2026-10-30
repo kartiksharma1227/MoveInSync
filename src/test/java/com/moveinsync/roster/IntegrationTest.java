@@ -30,7 +30,10 @@ import tools.jackson.databind.ObjectMapper;
  * Tests create employees with fresh random IDs, so they never interfere with each other.
  */
 @Import({TestcontainersConfiguration.class, TestPublisherConfig.class})
-@SpringBootTest(properties = "roster.outbox.relay-enabled=false") // tests run the relay by hand, so they're deterministic
+@SpringBootTest(properties = {
+        "roster.outbox.relay-enabled=false", // tests run the relay by hand, so they're deterministic
+        "roster.db.lock-timeout=2s"          // short, so lock-timeout tests finish quickly
+})
 @AutoConfigureMockMvc
 @AutoConfigureMetrics // keep /actuator/prometheus on in tests (Spring turns metric export off by default there)
 @ActiveProfiles("dev")

@@ -66,6 +66,22 @@ class RecordValidatorTest {
     }
 
     @Test
+    void employeeIdMustLookLikeAnId() {
+        assertThat(validator.validate("emp-42.k_A", 1, valid())).isEmpty();
+        for (String bad : new String[] {"Priya Sharma", "+919811111111", "x@acme.test", "E".repeat(65)}) {
+            assertThat(validator.validate(bad, 1, valid())).as(bad)
+                    .containsExactly(new FieldError("employeeId", "INVALID_FORMAT"));
+        }
+    }
+
+    @Test
+    void onlyIdShapedValuesAreEverEchoed() {
+        assertThat(RecordValidator.safeId("E1001")).isEqualTo("E1001");
+        assertThat(RecordValidator.safeId("Priya Sharma +919811111111")).isNull();
+        assertThat(RecordValidator.safeId(null)).isNull();
+    }
+
+    @Test
     void deactivateWithoutHrFieldsOnlyChecksTheEnvelope() {
         assertThat(validator.validate("E1", 3, null)).isEmpty();
     }

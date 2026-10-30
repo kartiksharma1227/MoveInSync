@@ -18,6 +18,7 @@ import java.io.FileInputStream;
 import java.io.InputStream;
 import java.nio.file.Files;
 import java.nio.file.Path;
+import java.nio.file.StandardOpenOption;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
@@ -137,6 +138,22 @@ class ReconciliationTest extends IntegrationTest {
 
         assertThat(body).doesNotContain("BAD-PHONE");
         assertThat(employeeStatus(benchId(5))).isEqualTo("ACTIVE");
+    }
+
+    @Test
+    void rowWithPersonalDataInTheIdColumnIsRejectedWithoutEchoingIt() throws Exception {
+        Path file = writeCsv(dir.resolve("night.csv"), CsvOptions.rows(10));
+        Files.writeString(file, "Priya Sharma +919811111111,1,Priya,p@acme.test,+919811111111,,BLR-01,S0900\n",
+                StandardOpenOption.APPEND);
+
+        String body = upload(file)
+                .andExpect(jsonPath("$.rowsRejected").value(1))
+                .andExpect(jsonPath("$.rejections[0].row").value(11))
+                .andExpect(jsonPath("$.rejections[0].employeeId").doesNotExist())
+                .andExpect(jsonPath("$.rejections[0].errors[0].code").value("INVALID_FORMAT"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).doesNotContain("Priya", "+919811111111");
     }
 
     @Test

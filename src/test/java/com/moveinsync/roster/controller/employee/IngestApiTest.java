@@ -121,6 +121,21 @@ class IngestApiTest extends IntegrationTest {
     }
 
     @Test
+    void personalDataInAnIdFieldIsRejectedAndNeverEchoed() throws Exception {
+        String leaky = "Priya Sharma +919811111111";
+
+        String body = send(hrSystem, List.of(new EventRequest(leaky, "UPDATE", leaky, 2L, T, hr("BLR-01", "S0900"))))
+                .andExpect(jsonPath("$.rejected").value(1))
+                .andExpect(jsonPath("$.errors[0].employeeId").doesNotExist())
+                .andExpect(jsonPath("$.errors[0].eventId").doesNotExist())
+                .andExpect(jsonPath("$.errors[0].errors[0].field").value("employeeId"))
+                .andExpect(jsonPath("$.errors[0].errors[0].code").value("INVALID_FORMAT"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).doesNotContain("Priya", "+919811111111");
+    }
+
+    @Test
     void updateForUnknownEmployeeIsRejected() throws Exception {
         send(hrSystem, List.of(event("UPDATE", uniqueId("UK"), 2, T, hr("BLR-01", "S0900"))))
                 .andExpect(jsonPath("$.rejected").value(1))

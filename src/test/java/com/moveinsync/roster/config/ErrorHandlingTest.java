@@ -72,6 +72,17 @@ class ErrorHandlingTest extends IntegrationTest {
     }
 
     @Test
+    void errorBodyNamesTheRouteNotTheRawPath() throws Exception {
+        String body = mockMvc.perform(get("/api/v1/employees/{id}", "Priya Sharma " + PHONE_IN_INPUT)
+                        .header("Authorization", token("admin", "ACME", "TRANSPORT_ADMIN")))
+                .andExpect(status().isNotFound())
+                .andExpect(jsonPath("$.instance").value("/api/v1/employees/{employeeId}"))
+                .andReturn().getResponse().getContentAsString();
+
+        assertThat(body).doesNotContain("Priya", PHONE_IN_INPUT);
+    }
+
+    @Test
     void missingTokenIsA401WithTheSameBodyShape() throws Exception {
         mockMvc.perform(get("/api/v1/employees/E1001"))
                 .andExpect(status().isUnauthorized())
