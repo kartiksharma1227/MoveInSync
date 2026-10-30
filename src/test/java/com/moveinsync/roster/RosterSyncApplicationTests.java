@@ -9,29 +9,15 @@ import java.util.List;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
-import org.springframework.boot.test.context.SpringBootTest;
-import org.springframework.boot.webmvc.test.autoconfigure.AutoConfigureMockMvc;
-import org.springframework.context.annotation.Import;
-import org.springframework.jdbc.core.JdbcTemplate;
-import org.springframework.test.context.ActiveProfiles;
-import org.springframework.test.web.servlet.MockMvc;
 
 import com.moveinsync.roster.core.RowHasher;
 import com.moveinsync.roster.entity.Employee;
 import com.moveinsync.roster.repository.EmployeeRepository;
 
-/** Phase 1 smoke test: the app starts on a real Postgres, migrations and seed data load, and security is on. */
-@Import(TestcontainersConfiguration.class)
-@SpringBootTest
-@AutoConfigureMockMvc
-@ActiveProfiles("dev")
-class RosterSyncApplicationTests {
+/** Smoke test: the app starts on a real Postgres, migrations and seed data load, and security is on. */
+class RosterSyncApplicationTests extends IntegrationTest {
 
-	@Autowired
-	MockMvc mockMvc;
-
-	@Autowired
-	JdbcTemplate jdbc;
+	static final List<String> SEEDED_ACME = List.of("E1001", "E1002", "E1003", "E1004", "E1005");
 
 	@Autowired
 	EmployeeRepository employeeRepository;
@@ -50,21 +36,22 @@ class RosterSyncApplicationTests {
 
 	@Test
 	void migrationsAndSeedDataAreLoaded() {
-		Integer employees = jdbc.queryForObject("SELECT count(*) FROM employee", Integer.class);
+		// Other tests add employees to the same database, so count only the seeded ones.
+		Integer seeded = jdbc.queryForObject(
+			"SELECT count(*) FROM employee WHERE employee_id IN ('E1001','E1002','E1003','E1004','E1005','G2001','G2002')",
+			Integer.class);
 		Integer badHashes = jdbc.queryForObject("SELECT count(*) FROM employee WHERE length(row_hash) <> 64", Integer.class);
 
-		assertThat(employees).isEqualTo(7);
+		assertThat(seeded).isEqualTo(7);
 		assertThat(badHashes).isZero();
 	}
 
 	/** Proves the JPA mapping matches the schema, and that the Java hash agrees with the SQL seed hash. */
 	@Test
 	void seededEmployeesLoadAndJavaHashMatchesStoredHash() {
-		List<Employee> all = employeeRepository.findAll();
-
-		assertThat(all).hasSize(7);
-		for (Employee e : all) {
-			assertThat(RowHasher.hash(e.hr())).as(e.getEmployeeId()).isEqualTo(e.getRowHash());
+		for (String id : SEEDED_ACME) {
+			Employee e = employeeRepository.findByTenantIdAndEmployeeId("ACME", id).orElseThrow();
+			assertThat(RowHasher.hash(e.hr())).as(id).isEqualTo(e.getRowHash());
 		}
 		Employee e1002 = employeeRepository.findByTenantIdAndEmployeeId("ACME", "E1002").orElseThrow();
 		assertThat(e1002.transport().specialAssistance()).isEqualTo("Wheelchair access");
