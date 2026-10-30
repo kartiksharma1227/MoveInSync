@@ -26,7 +26,7 @@ curl -s localhost:8080/api/v1/events -H "Authorization: Bearer $TOKEN" \
 
 # 3. Upload a nightly file
 curl -s localhost:8080/api/v1/reconciliations -H "Authorization: Bearer $TOKEN" \
-  -F file=@samples/nightly-full.csv -F snapshotAt=2026-10-30T22:00:00Z
+  -F file=@samples/nightly-full.csv -F snapshotAt=$(date -u +%Y-%m-%dT%H:%M:%SZ)
 ```
 
 | Script | What it shows |
@@ -35,7 +35,7 @@ curl -s localhost:8080/api/v1/reconciliations -H "Authorization: Bearer $TOKEN" 
 | `scripts/crash-demo.sh` | **Live failure:** the app is killed (`kill -9`) after a change commits but before its event is published, and after a restart the event is still delivered and bookings are cancelled |
 
 **Tests:** `./mvnw test` (Docker must be running; Testcontainers starts Postgres). 111 tests, including the 200k
-benchmark and the load test, finish in about 1.5 minutes.
+benchmark and the load test, finish in about a minute.
 
 ---
 
@@ -144,8 +144,8 @@ between runs, so ranges are from several runs.
 
 | Rows | Total time | Rows/s | Breakdown (200k) | Peak heap growth |
 |---|---|---|---|---|
-| 50,000 | 2.5 – 4.9 s | 10k – 20k | | 59 – 110 MB |
-| **200,000** | **7.8 – 10.7 s** (budget 60 s) | 19k – 26k | stage ≈ 5 s · brake counts ≈ 0.3 s · diff + apply 2,000 changes ≈ 2.4 – 5.4 s | 83 – 110 MB |
+| 50,000 | 2.5 – 4.9 s | 10k – 20k | | 59 – 114 MB |
+| **200,000** | **7.8 – 10.7 s** (budget 60 s) | 19k – 26k | stage ≈ 5 s · brake counts ≈ 0.3 s · diff + apply 2,000 changes ≈ 2.4 – 5.4 s | 83 – 112 MB |
 
 4× the rows did **not** mean 4× the memory: every stage holds at most one 1,000-row batch or page. (Peak heap includes
 uncollected garbage, so it's an upper bound.) **Truncated file:** 120,000 of 200,000 rows → held, `missingCount = 80,000`,

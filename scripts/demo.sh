@@ -14,6 +14,10 @@ token() {
 }
 events() { curl -s "$API/api/v1/events" -H "Authorization: Bearer $HR" -H 'Content-Type: application/json' "$@"; }
 employee() { curl -s "$API/api/v1/employees/$1" -H "Authorization: Bearer $2"; }
+# Export times relative to now: a snapshot can't be in the future, and the second export is taken after the first.
+minutes_ago() { python3 -c "import datetime as d; print((d.datetime.now(d.timezone.utc) - d.timedelta(minutes=$1)).strftime('%Y-%m-%dT%H:%M:%SZ'))"; }
+FIRST_EXPORT=$(minutes_ago 10)
+SECOND_EXPORT=$(minutes_ago 1)
 
 step "0. Fresh start: docker compose up (app + Postgres, seeded with ACME and GLOBEX)"
 docker compose down -v > /dev/null 2>&1 || true
@@ -48,11 +52,11 @@ curl -s -X PUT "$API/api/v1/employees/E1001/transport" -H "Authorization: Bearer
 
 step "7. Nightly file (full): E1002 moves office, E1006 joins, E1001 row is older than the API change (stale)"
 curl -s "$API/api/v1/reconciliations" -H "Authorization: Bearer $HR" \
-  -F file=@samples/nightly-full.csv -F snapshotAt=2026-10-30T22:00:00Z | pretty
+  -F file=@samples/nightly-full.csv -F snapshotAt="$FIRST_EXPORT" | pretty
 
 step "8. Nightly file cut short (2 of 7 rows): the safety brake holds the run, nobody is deactivated"
 RUN=$(curl -s "$API/api/v1/reconciliations" -H "Authorization: Bearer $HR" \
-  -F file=@samples/nightly-truncated.csv -F snapshotAt=2026-10-31T22:00:00Z)
+  -F file=@samples/nightly-truncated.csv -F snapshotAt="$SECOND_EXPORT")
 echo "$RUN" | pretty
 RUN_ID=$(echo "$RUN" | python3 -c 'import sys,json; print(json.load(sys.stdin)["id"])')
 
