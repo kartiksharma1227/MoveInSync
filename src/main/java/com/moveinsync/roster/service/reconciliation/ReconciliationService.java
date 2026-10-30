@@ -11,10 +11,13 @@ import java.util.function.Consumer;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Value;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.http.HttpStatus;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.support.TransactionTemplate;
 import org.springframework.web.server.ResponseStatusException;
 
@@ -50,8 +53,8 @@ public class ReconciliationService {
 
     public record RunView(long id, String status, Instant snapshotAt, String fileSha256, int rowsTotal,
                           int rowsRejected, Integer activeCount, Integer missingCount, Double missingRatio,
-                          BigDecimal threshold, int created, int updated, int deactivated, String decidedBy,
-                          Instant decidedAt, Object rejections) {
+                          BigDecimal threshold, int created, int updated, int deactivated, int failed,
+                          String decidedBy, Instant decidedAt, Object rejections) {
     }
 
     private final ReconciliationRunRepository runs;
@@ -160,6 +163,7 @@ public class ReconciliationService {
         int created = 0;
         int updated = 0;
         int deactivated = 0;
+        int failed = 0;
 
         String after = "";
         List<ChangedRow> page;
@@ -167,8 +171,19 @@ public class ReconciliationService {
             for (ChangedRow row : page) {
                 // Same path as a real-time event: version gate, row lock, outbox. A newer API change wins (stale).
                 HrProfile hr = json.readValue(row.payloadJson(), HrProfile.class);
-                Optional<ApplyOutcome> outcome = ingestService.apply(tenantId,
-                        new RosterEvent.Snapshot(row.employeeId(), row.version(), snapshotAt, hr));
+                Optional<ApplyOutcome> outcome;
+                try {
+                    outcome = ingestService.apply(tenantId,
+                            new RosterEvent.Snapshot(row.employeeId(), row.version(), snapshotAt, hr));
+                } catch (CannotCreateTransactionException | DataAccessResourceFailureException e) {
+                    throw e; // database unreachable: stop the run (it's marked FAILED) rather than fail every row slowly
+                } catch (RuntimeException e) {
+                    // One row failing (e.g. its employee locked past the lock timeout) must not fail the whole run.
+                    // Re-uploading the same file later applies just this row.
+                    rowFailed(tenantId, runId, row.employeeId(), e);
+                    failed++;
+                    continue;
+                }
                 if (outcome.orElse(null) == ApplyOutcome.APPLIED) {
                     if (row.isNew()) {
                         created++;
@@ -185,21 +200,34 @@ public class ReconciliationService {
         List<String> missing;
         while (!(missing = snapshots.missingPage(tenantId, runId, snapshotAt, after, PAGE_SIZE)).isEmpty()) {
             for (String employeeId : missing) {
-                if (deactivateMissing(tenantId, employeeId, snapshotAt)) {
-                    deactivated++;
+                try {
+                    if (deactivateMissing(tenantId, employeeId, snapshotAt)) {
+                        deactivated++;
+                    }
+                } catch (CannotCreateTransactionException | DataAccessResourceFailureException e) {
+                    throw e;
+                } catch (RuntimeException e) {
+                    rowFailed(tenantId, runId, employeeId, e);
+                    failed++;
                 }
             }
             after = missing.get(missing.size() - 1);
             heartbeat(runId);
         }
 
-        int c = created, u = updated, d = deactivated;
-        ReconciliationRun done = update(runId, r -> r.complete(c, u, d));
+        int c = created, u = updated, d = deactivated, f = failed;
+        ReconciliationRun done = update(runId, r -> r.complete(c, u, d, f));
         snapshots.deleteRun(runId);
         metrics.reconRun(tenantId, "completed");
-        log.info("Reconciliation completed runId={} tenant={} created={} updated={} deactivated={} applyMs={}",
-                runId, tenantId, c, u, d, ms(System.nanoTime() - start));
+        log.info("Reconciliation completed runId={} tenant={} created={} updated={} deactivated={} failed={} applyMs={}",
+                runId, tenantId, c, u, d, f, ms(System.nanoTime() - start));
         return done;
+    }
+
+    private void rowFailed(String tenantId, long runId, String employeeId, RuntimeException e) {
+        String code = e instanceof PessimisticLockingFailureException ? "LOCK_TIMEOUT" : "PROCESSING_FAILED";
+        log.warn("Reconciliation row failed runId={} tenant={} employeeId={} code={} type={}",
+                runId, tenantId, employeeId, code, e.getClass().getSimpleName());
     }
 
     /**
@@ -304,8 +332,8 @@ public class ReconciliationService {
         Object rejections = r.getRejections() == null ? List.of() : json.readTree(r.getRejections());
         return new RunView(r.getId(), r.getStatus().name(), r.getSnapshotAt(), r.getFileSha256(), r.getRowsTotal(),
                 r.getRowsRejected(), r.getActiveCount(), r.getMissingCount(), ratio, r.getThreshold(),
-                r.getCreatedCount(), r.getUpdatedCount(), r.getDeactivatedCount(), r.getDecidedBy(), r.getDecidedAt(),
-                rejections);
+                r.getCreatedCount(), r.getUpdatedCount(), r.getDeactivatedCount(), r.getFailedCount(), r.getDecidedBy(),
+                r.getDecidedAt(), rejections);
     }
 
     private String toJson(Object value) {

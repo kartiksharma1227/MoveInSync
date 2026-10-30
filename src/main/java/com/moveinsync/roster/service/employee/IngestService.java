@@ -9,8 +9,11 @@ import java.util.Optional;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
+import org.springframework.dao.DataAccessResourceFailureException;
 import org.springframework.dao.DataIntegrityViolationException;
+import org.springframework.dao.PessimisticLockingFailureException;
 import org.springframework.stereotype.Service;
+import org.springframework.transaction.CannotCreateTransactionException;
 import org.springframework.transaction.support.TransactionTemplate;
 
 import com.moveinsync.roster.config.RosterMetrics;
@@ -51,8 +54,9 @@ public class IngestService {
     public record RecordError(int index, String eventId, String employeeId, List<FieldError> errors) {
     }
 
+    /** rejected = the record itself was invalid; failed = a valid record that couldn't be applied right now (retryable). */
     public record BatchResult(int received, int applied, int duplicate, int stale, int versionConflict, int rejected,
-                              List<RecordError> errors) {
+                              int failed, List<RecordError> errors) {
     }
 
     private final EmployeeRepository employees;
@@ -77,6 +81,7 @@ public class IngestService {
         metrics.events(tenantId, "stale", result.stale());
         metrics.events(tenantId, "version_conflict", result.versionConflict());
         metrics.events(tenantId, "rejected", result.rejected());
+        metrics.events(tenantId, "failed", result.failed());
         return result;
     }
 
@@ -85,6 +90,7 @@ public class IngestService {
         Map<ApplyOutcome, Integer> counts = new EnumMap<>(ApplyOutcome.class);
         List<RecordError> errors = new ArrayList<>();
         int rejected = 0;
+        int failed = 0;
 
         for (int i = 0; i < requests.size(); i++) {
             EventRequest request = requests.get(i);
@@ -94,16 +100,28 @@ public class IngestService {
                 rejected++;
                 continue;
             }
-            Optional<ApplyOutcome> outcome = apply(tenantId, toEvent(request));
+            Optional<ApplyOutcome> outcome;
+            try {
+                outcome = apply(tenantId, toEvent(request));
+            } catch (CannotCreateTransactionException | DataAccessResourceFailureException e) {
+                // The database itself is unreachable, so every remaining record would fail too (each after a connection
+                // timeout). Stop now; the client retries the whole batch, which is safe because it's idempotent.
+                throw e;
+            } catch (RuntimeException e) {
+                // One record failing (a lock wait timing out, a database error) must never fail the whole batch.
+                errors.add(failure(tenantId, i, request, e));
+                failed++;
+                continue;
+            }
             if (outcome.isEmpty()) {
-                errors.add(new RecordError(i, request.eventId(), request.employeeId(),
+                errors.add(new RecordError(i, eventIdOf(request), request.employeeId(),
                         List.of(new FieldError("employeeId", "UNKNOWN_EMPLOYEE"))));
                 rejected++;
                 continue;
             }
             counts.merge(outcome.get(), 1, Integer::sum);
             if (outcome.get() == ApplyOutcome.VERSION_CONFLICT) {
-                errors.add(new RecordError(i, request.eventId(), request.employeeId(),
+                errors.add(new RecordError(i, eventIdOf(request), request.employeeId(),
                         List.of(new FieldError("version", "VERSION_CONFLICT"))));
             }
         }
@@ -113,11 +131,22 @@ public class IngestService {
                 counts.getOrDefault(ApplyOutcome.DUPLICATE, 0),
                 counts.getOrDefault(ApplyOutcome.STALE, 0),
                 counts.getOrDefault(ApplyOutcome.VERSION_CONFLICT, 0),
-                rejected, errors);
-        log.info("Ingested batch tenant={} received={} applied={} duplicate={} stale={} versionConflict={} rejected={}",
+                rejected, failed, errors);
+        log.info("Ingested batch tenant={} received={} applied={} duplicate={} stale={} versionConflict={} rejected={} failed={}",
                 tenantId, result.received(), result.applied(), result.duplicate(), result.stale(),
-                result.versionConflict(), result.rejected());
+                result.versionConflict(), result.rejected(), result.failed());
         return result;
+    }
+
+    /**
+     * A valid record that couldn't be applied. LOCK_TIMEOUT means another transaction held this employee's row too
+     * long; PROCESSING_FAILED is anything else. Both are safe to retry. Only the exception type is logged.
+     */
+    private RecordError failure(String tenantId, int index, EventRequest request, RuntimeException e) {
+        String code = e instanceof PessimisticLockingFailureException ? "LOCK_TIMEOUT" : "PROCESSING_FAILED";
+        log.warn("Record failed tenant={} employeeId={} code={} type={}", tenantId, request.employeeId(), code,
+                e.getClass().getSimpleName());
+        return new RecordError(index, eventIdOf(request), request.employeeId(), List.of(new FieldError("record", code)));
     }
 
     private List<FieldError> validate(EventRequest request, RecordValidator validator) {
@@ -192,11 +221,12 @@ public class IngestService {
         return Optional.of(ApplyOutcome.APPLIED);
     }
 
+    /** IDs from a rejected record are echoed only if they look like IDs (see RecordValidator.safeId). */
     private static String eventIdOf(EventRequest request) {
-        return request == null ? null : request.eventId();
+        return request == null ? null : RecordValidator.safeId(request.eventId());
     }
 
     private static String employeeIdOf(EventRequest request) {
-        return request == null ? null : request.employeeId();
+        return request == null ? null : RecordValidator.safeId(request.employeeId());
     }
 }

@@ -53,6 +53,8 @@ public class ReconciliationRun extends BaseTenantEntity {
     private int createdCount;
     private int updatedCount;
     private int deactivatedCount;
+    /** Valid rows that couldn't be applied this time (e.g. lock timeout); re-uploading the file retries them. */
+    private int failedCount;
     private String decidedBy;
     private Instant decidedAt;
 
@@ -100,10 +102,11 @@ public class ReconciliationRun extends BaseTenantEntity {
         decidedAt = at;
     }
 
-    public void complete(int created, int updated, int deactivated) {
+    public void complete(int created, int updated, int deactivated, int failed) {
         createdCount = created;
         updatedCount = updated;
         deactivatedCount = deactivated;
+        failedCount = failed;
         status = Status.COMPLETED;
     }
 
@@ -168,6 +171,10 @@ public class ReconciliationRun extends BaseTenantEntity {
 
     public int getDeactivatedCount() {
         return deactivatedCount;
+    }
+
+    public int getFailedCount() {
+        return failedCount;
     }
 
     public String getDecidedBy() {
