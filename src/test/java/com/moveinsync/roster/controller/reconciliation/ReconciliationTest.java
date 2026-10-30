@@ -22,6 +22,7 @@ import java.nio.file.StandardOpenOption;
 import java.sql.Timestamp;
 import java.time.Duration;
 import java.time.Instant;
+import java.util.ArrayList;
 import java.util.List;
 
 import org.junit.jupiter.api.BeforeEach;
@@ -280,6 +281,49 @@ class ReconciliationTest extends IntegrationTest {
         assertThat(jdbc.queryForObject("SELECT count(*) FROM reconciliation_run WHERE tenant_id = ?", Integer.class,
                 tenant)).isZero();
         assertThat(activeCount()).isEqualTo(10);
+    }
+
+    @Test
+    void completeRejectionReportIsPagedAndContainsNoValues() throws Exception {
+        Path file = writeCsv(dir.resolve("bad.csv"), CsvOptions.rows(250).badEvery(1)); // every row has a bad phone
+        String body = upload(file)
+                .andExpect(jsonPath("$.rowsRejected").value(250))
+                .andExpect(jsonPath("$.rejections.length()").value(100)) // inline preview stays at 100
+                .andReturn().getResponse().getContentAsString();
+        long runId = ((Number) JsonPath.read(body, "$.id")).longValue();
+
+        List<Integer> rows = new ArrayList<>();
+        Long after = 0L;
+        int pages = 0;
+        while (after != null) {
+            String page = mockMvc.perform(get("/api/v1/reconciliations/{id}/rejections", runId)
+                            .param("afterRow", after.toString()).param("limit", "100")
+                            .header("Authorization", hr))
+                    .andExpect(status().isOk())
+                    .andReturn().getResponse().getContentAsString();
+            assertThat(page).doesNotContain("BAD-PHONE", "@bench.test", "Employee ");
+            List<Integer> pageRows = JsonPath.read(page, "$.items[*].row");
+            rows.addAll(pageRows);
+            Number next = JsonPath.read(page, "$.nextAfterRow");
+            after = next == null ? null : next.longValue();
+            pages++;
+        }
+
+        assertThat(rows).hasSize(250).doesNotHaveDuplicates().isSorted(); // all 250, each once, in file order
+        assertThat(rows.get(0)).isEqualTo(1);
+        assertThat(rows.get(249)).isEqualTo(250);
+        assertThat(pages).isEqualTo(3);
+        mockMvc.perform(get("/api/v1/reconciliations/{id}/rejections", runId).header("Authorization", operator))
+                .andExpect(status().isOk())
+                .andExpect(jsonPath("$.items[0].employeeId").value(benchId(1)))
+                .andExpect(jsonPath("$.items[0].errors[0].field").value("phone"))
+                .andExpect(jsonPath("$.items[0].errors[0].code").value("INVALID_FORMAT"));
+        mockMvc.perform(get("/api/v1/reconciliations/{id}/rejections", runId)
+                        .header("Authorization", token("ops", "GLOBEX", "OPERATOR")))
+                .andExpect(status().isNotFound());
+        mockMvc.perform(get("/api/v1/reconciliations/{id}/rejections", runId)
+                        .header("Authorization", token("admin", tenant, "TRANSPORT_ADMIN")))
+                .andExpect(status().isForbidden());
     }
 
     @Test
