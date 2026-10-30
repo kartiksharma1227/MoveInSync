@@ -34,7 +34,7 @@ curl -s localhost:8080/api/v1/reconciliations -H "Authorization: Bearer $TOKEN" 
 | `scripts/demo.sh` | Every main flow end to end: per-record report, replay, out-of-order, tenant isolation, field ownership, nightly run, safety brake + operator decision, metrics, error format |
 | `scripts/crash-demo.sh` | **Live failure:** the app is killed (`kill -9`) after a change commits but before its event is published, and after a restart the event is still delivered and bookings are cancelled |
 
-**Tests:** `./mvnw test` (Docker must be running; Testcontainers starts Postgres). 110 tests, including the 200k
+**Tests:** `./mvnw test` (Docker must be running; Testcontainers starts Postgres). 111 tests, including the 200k
 benchmark and the load test, finish in about 1.5 minutes.
 
 ---
@@ -49,7 +49,8 @@ All endpoints need `Authorization: Bearer <JWT>`. The tenant is taken **only fro
 | `GET /api/v1/employees/{id}` | `TRANSPORT_ADMIN`, `OPERATOR`, `EMPLOYEE` (self) | Read an employee (operators don't see contact details) |
 | `PUT /api/v1/employees/{id}/transport` | `TRANSPORT_ADMIN` | Pickup point and special assistance |
 | `POST /api/v1/reconciliations` (multipart `file`, `snapshotAt`) | `HR_SYSTEM` | Nightly full file → `COMPLETED`, or `AWAITING_APPROVAL` if the safety brake trips (`snapshotAt` more than 5 min in the future → 400 `INVALID_SNAPSHOT_TIME`) |
-| `GET /api/v1/reconciliations/{id}` | `OPERATOR` | Run status and counts (incl. how many employees the file appears to be missing) |
+| `GET /api/v1/reconciliations/{id}` | `OPERATOR` | Run status and counts (incl. how many employees the file appears to be missing), plus a preview of the first 100 rejected rows |
+| `GET /api/v1/reconciliations/{id}/rejections?afterRow=0&limit=500` | `OPERATOR`, `HR_SYSTEM` | The **complete** per-row error report (row, employeeId, field, code), paged by row number (max 1,000 per page); `nextAfterRow` is null on the last page |
 | `POST /api/v1/reconciliations/{id}/approve` · `/reject` | `OPERATOR` | Decide a held run |
 | `GET /actuator/health` | none | Liveness |
 | `GET /actuator/prometheus` | `OPERATOR` | Metrics |
@@ -118,7 +119,7 @@ Every incoming change (API event or nightly row) is compared with the stored ver
 
 | # | Rule | Proven by |
 |---|---|---|
-| H1 | Invalid record rejected with a per-record error, batch continues | `IngestApiTest.badRecordsAreRejectedOneByOneAndTheGoodOnesStillApply`, `RecordValidatorTest`, `ReconciliationTest.rejectedRowIsReportedButItsEmployeeIsNotTreatedAsMissing` |
+| H1 | Invalid record rejected with a per-record error, batch continues | `IngestApiTest.badRecordsAreRejectedOneByOneAndTheGoodOnesStillApply`, `RecordValidatorTest`, `ReconciliationTest.rejectedRowIsReportedButItsEmployeeIsNotTreatedAsMissing`, `…completeRejectionReportIsPagedAndContainsNoValues` |
 | H2 | Per-employee version order: stale ignored (v7 before v6) | `EmployeeTest.outOfOrder_v7BeforeV6_staleV6IsIgnoredAndV7Wins`, `IngestApiTest.outOfOrder_v7BeforeV6_staleV6IsIgnored` |
 | H3 | Replaying the same feed twice changes nothing | `IngestApiTest.replayingTheSameFeedTwiceChangesNothing` (even `updated_at` is unchanged, and no new outbox events), `ReconciliationTest.sameFileTwiceChangesNothingTheSecondTime` |
 | H4 | HR never overwrites transport-owned fields | `EmployeeTest.hrUpdateNeverTouchesTransportOwnedFields`, `IngestApiTest.hrOfficeChangeKeepsTheAdminsPickupPointAndFlagsIt`, `…transportFieldsSentInsideAnHrEventAreIgnored`, `…employeeCannotEditTransportFieldsEvenTheirOwn` |

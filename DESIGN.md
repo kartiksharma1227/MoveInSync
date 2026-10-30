@@ -40,7 +40,8 @@ validators; the `EventPublisher` implementations).
 | `employee` | `UNIQUE(tenant_id, employee_id)`, `hr_version`, `row_hash`, `last_hr_change_at`, HR fields, transport fields, `opt_lock` | `hr_version` is the idempotency/ordering state. `row_hash` makes the nightly diff one comparison. Transport fields are written only by transport edits |
 | `outbox_event` | `event_id` (UUID), `payload` (IDs only), `published_at`, `attempts`; partial index on unpublished rows | Written in the same transaction as the change. The relay finds work cheaply, and poison events are parked after 10 attempts |
 | `reconciliation_run` | `status`, `snapshot_at`, `threshold`, counts, `decided_by`; partial unique index (one open run per tenant) | Durable brake decision and audit trail. A held run survives restarts |
-| `snapshot_row` | `PK(run_id, employee_id)`, `row_hash`, `valid` | The file lives here, not in memory. Rejected rows still count as "present" |
+| `snapshot_row` | `PK(run_id, employee_id)`, `row_hash`, `valid` | The file lives here, not in memory. Rejected rows still count as "present". Deleted when the run ends |
+| `reconciliation_rejection` | `PK(run_id, row_number)`, `employee_id` (safe IDs only), `errors` (codes) | The complete per-row error report, written in batches of 1,000 and kept after the run so HR can fix every row. Never holds field values |
 | `booking`, `trip` | `status`; `seats_booked CHECK (0..capacity)` | Side effects of deactivation. A seat count can never go negative |
 
 Every table has `tenant_id`, and every query filters by the tenant from the verified JWT.
