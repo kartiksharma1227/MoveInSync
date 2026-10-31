@@ -7,22 +7,38 @@ database is the referee for ordering, idempotency and locking, so correctness ne
 request.
 
 ```mermaid
-flowchart LR
-    HR["HR system"] -->|"events, nightly CSV"| API
-    TA["Transport admin"] -->|"pickup edits"| API
-    OP["Operator"] -->|"approve / reject runs"| API
-    PROM["Prometheus"] -->|"scrape (OPERATOR token)"| API
+flowchart TB
+    HR["HR system"]
+    TA["Transport admin"]
+    OP["Operator"]
+    PROM["Prometheus"]
 
-    subgraph APP["Spring Boot app (stateless, N instances)"]
-        API["Controllers<br/>JWT, roles, tenant from token"] --> SVC["Services<br/>Ingest, Employee, Reconciliation"]
-        SVC --> CORE["Domain core (plain Java)<br/>Employee, RosterEvent, VersionGate,<br/>RecordValidator, RowHasher, SafetyBrake"]
-        RELAY["OutboxRelay<br/>every 500 ms, SKIP LOCKED"] --> PUB["EventPublisher (interface)"]
-        PUB --> BOOK["BookingCancellationHandler"]
+    subgraph APP["Spring Boot app (stateless, run N instances)"]
+        API["Controllers<br/>JWT check, roles, tenant from token"]
+        SVC["Services<br/>IngestService, EmployeeService,<br/>ReconciliationService, SnapshotStager"]
+        CORE["Domain rules (plain Java)<br/>core: RosterEvent, VersionGate, RecordValidator,<br/>RowHasher, SafetyBrake + the Employee entity"]
+        REPO["Repositories<br/>JPA for single rows, JdbcTemplate for bulk"]
+        RELAY["OutboxRelay (scheduled)<br/>every 500 ms, FOR UPDATE SKIP LOCKED"]
+        PUB["EventPublisher (interface)<br/>in-process today, Kafka later"]
+        BOOK["BookingCancellationHandler"]
+        JOBS["Scheduled clean-up<br/>stuck-run sweeper, outbox purge"]
+
+        API --> SVC
+        SVC -->|"apply rules"| CORE
+        SVC -->|"one transaction: change + outbox row"| REPO
+        RELAY -->|"lock unpublished, mark published"| REPO
+        RELAY --> PUB
+        PUB -->|"EMPLOYEE_DEACTIVATED"| BOOK
+        BOOK -->|"cancel future bookings, free seats"| REPO
+        JOBS --> REPO
     end
 
-    SVC -->|"one transaction: change + outbox row"| DB[("PostgreSQL")]
-    RELAY -->|"read unpublished events"| DB
-    BOOK -->|"cancel future bookings, free seats"| DB
+    HR -->|"events, nightly CSV"| API
+    TA -->|"pickup edits"| API
+    OP -->|"approve / reject held runs"| API
+    PROM -->|"scrape (OPERATOR token)"| API
+
+    REPO -->|"SQL, always filtered by tenant"| DB[("PostgreSQL")]
 ```
 
 **Layers:** controller (HTTP and roles only) → service (transactions, orchestration) → repository (SQL), with the business
